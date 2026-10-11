@@ -211,6 +211,7 @@ class Recommendation(Base):
     passed_validation: Mapped[Optional[bool]] = mapped_column(Boolean)
     marked_for_additional_review: Mapped[bool] = mapped_column(Boolean, default=False)
     review_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    explanation: Mapped[Optional[str]] = mapped_column(Text)  # the Coordinator's text (phase 2)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     application: Mapped[Application] = relationship(back_populates="recommendations")
@@ -287,6 +288,21 @@ def _upgrade_document_tables(engine: Engine) -> None:
     Base.metadata.create_all(engine, tables=[Document.__table__, ExtractedField.__table__])
 
 
+def _add_missing_columns(engine: Engine) -> None:
+    """Columns added after a table was created. ADD COLUMN keeps every existing row as it is
+    (the new column is NULL), so it is safe on a table that holds data."""
+    added = {"recommendations": ["explanation"]}
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, columns in added.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name in columns:
+                if name not in have:
+                    col = Base.metadata.tables[table].c[name]
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} "
+                                      f"{col.type.compile(engine.dialect)}"))
+
+
 def get_engine() -> Engine:
     load_dotenv(PROJECT_ROOT / ".env")
     url = _resolve_url(os.getenv("DATABASE_URL") or DEFAULT_URL)
@@ -304,6 +320,7 @@ def get_engine() -> Engine:
 
     Base.metadata.create_all(engine)
     _upgrade_document_tables(engine)
+    _add_missing_columns(engine)
     if is_sqlite:
         # The ORM guard above can be bypassed with raw SQL; these triggers cannot.
         with engine.begin() as conn:

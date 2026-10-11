@@ -523,3 +523,114 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   so in a planted case the pay stub disagrees with both the form and the bank statement. All
   names are fictional and tagged "(sample Sxx)".
 - Problems: none.
+
+### E4. Document Reader — ✅ Done
+- Test (database copy, `qwen3.5:35b`, all 20 samples, 40 documents):
+
+  | Run | Field accuracy | Page accuracy | Valid JSON | Annual income correct | s / document |
+  |---|---|---|---|---|---|
+  | 1: full pages | 145/200 = 72.5% | 150/200 = 75.0% | 40/40 | 20/20 | 3.6 |
+  | 2: pages cropped to content | **200/200 = 100%** | **200/200 = 100%** | **40/40** | **20/20** | 3.4 |
+
+- Changes: new `document_reader.py` (prompts, one JSON schema per document type, `validate()`
+  for step 3, `read_document()` saves `extracted_fields`). `documents.py` (`crop_to_content`).
+- Decisions: each field comes back as `{value, page, confidence}`. Thinking is off. The prompt
+  says to extract only what is printed, use null when a value is missing, and never calculate.
+  The step 3 checks in code: valid JSON, the expected shape, types, pay period in the allowed
+  list, amounts positive and plausible, dates in ISO format within the last 18 months (up to 31
+  days ahead), page numbers within the document, and a statement period of 1 to 62 days.
+  Annual income = gross pay × periods per year (52/26/24/12), computed by code and saved as its
+  own `annual_income` field (`extraction_model = "code"`). Any failed check or null required
+  field sets `needs_review` on that field. The model's confidence is stored but never used to
+  clear a field. `annual_income` becomes `documented_income` for `check_rules()`, so
+  `INCOME_MISMATCH` now uses the pay stub.
+- Problems: in run 1, 18 of 20 bank statements came back with null or misread balances (e.g.
+  2,792.44 read as 279244), while the single-page pay stubs were perfect. An experiment on 3
+  statements showed the cause. The server appears to downscale large images (each A4 page cost
+  about 1,100 prompt tokens), so on mostly blank pages the digits became unreadable. Cropping
+  each page to its printed content (ignoring the light watermark) fixed all 3, and run 2 got
+  every field right. Caveat: the samples are clean generated PDFs, so real scans will do worse.
+  That is why `needs_review` and officer verification exist.
+
+### E5. Pattern review — ✅ Done
+- Test: unit checks of the evidence filter. Kept a valid finding and one whose numbers appear in
+  the data. Discarded findings with no evidence, an unknown document (`w2`), an unknown field
+  (`net_pay`), or a number not in the data ("23% higher"). Then ran pattern review on the
+  extracted samples (database copy). The run was stopped after 16 of 20, at your request
+  ("one is enough").
+
+  | Result (16 applications, `qwen3.5:35b`, thinking on) | |
+  |---|---|
+  | Findings kept / discarded by the evidence check | 3 / 0 |
+  | Planted mismatches with a finding | 2 of 4 reached (S04, S09; not S01, S08) |
+  | Clean applications with a finding | 1 of 12 (S16, false positive) |
+  | Seconds per application | 10.8 to 62.2 (about 38 on average) |
+
+  All saved flags have `source = "pattern"` and `severity = "warning"`, with evidence holding the
+  model's description plus each cited field and its stored value, looked up by code.
+- Changes: new `pattern_review.py`.
+- Decisions: findings cite `{document, field}` pairs, where the document is `pay_stub`,
+  `bank_statement` or `form`. Codes are normalized to UPPER_SNAKE_CASE. Following rule 10, a
+  finding whose description states a number not found in the cited data is discarded (the
+  prompt says to name fields and leave the arithmetic to code). Pattern review is a second
+  opinion: the planted income mismatches are caught deterministically by the `INCOME_MISMATCH`
+  rule, which uses the pay stub income from E4.
+- Problems: S16's finding said the closing balance didn't equal the opening balance plus
+  deposits, but withdrawals exist and are not extracted. The prompt now says this is normal.
+  Not re-run (single-sample testing from here on).
+
+### E6. Decision Coordinator — ✅ Done
+- Test (one sample, S04 with a planted mismatch, database copy): the full workflow ran in 65 s
+  (document reader 7 s, pattern review 41 s, Coordinator plus validation 15 s). The Coordinator
+  called the five tools once each (5 of 8 allowed) and answered **deny**, confidence 0.95,
+  reason codes `INCOME_MISMATCH, PAYMENT_TO_INCOME_HIGH, LOAN_TO_INCOME_HIGH,
+  DEPOSITS_BELOW_PAY_STUB_INCOME, MODEL_DRIVER:person_home_ownership & loan_percent_income`. Its
+  explanation cites the stated income ($36,575), documented income ($47,803.56), mismatch 0.307
+  against the 15% limit, probability 0.9999, the top two contributions, and both ratio flags,
+  every number taken from a tool result. Guard tests: an unknown tool, another application's id,
+  and an extra argument each returned an error message instead of running. The application
+  stayed `in_review` (tools never change status).
+- Changes: new `coordinator.py` (5 tools, `run_tool` guard, `coordinate` loop), new
+  `workflow.py` (steps 1-9). `db.py`: `recommendations.explanation` column, added with
+  `ALTER TABLE ADD COLUMN`, which keeps existing rows (the real table has 0 rows).
+- Decisions: each tool call writes an audit row with actor `model`, matching the sequence diagram
+  and F3. Tools read stored results. If calculations, rules or the score are missing, the tool
+  computes them with the same function and saves them. The intake audit row now stores the full
+  form, so tools rebuild exactly what was scored. When the model stops calling tools, one more
+  call (no tools, JSON schema) gets the final answer. At the 8-call limit the loop stops, that
+  final call is still made so the officer sees a recommendation, and the application is marked
+  `TOOL_CALL_LIMIT_REACHED`. The Coordinator's text goes into the new `explanation` column (the
+  table had no field for it).
+- Problems: none.
+
+### E7. Output validation — ✅ Done
+- Test: offline checks. A valid refer passed. An unknown reason code, an explanation stating 55%
+  (not in any tool result), approve with a critical flag or p ≥ 0.5, deny with no flags and
+  p = 0.1, and a malformed answer each failed with the matching reason. The number check accepts
+  rounding and percent forms (0.1975 written as 19.75% or 0.20, −0.9012 as "lowers by 0.90",
+  "36 months" from an assumption string) and rejects 91% and 800. In the S04 run, validation
+  passed.
+- Changes: new `validation.py` (`unsupported_numbers`, `validate_recommendation`,
+  `GENERAL_REASONS`, `RECOMMENDATION_SCHEMA`).
+- Decisions: the allowed numbers are every number in this run's tool results, including numbers
+  inside strings such as dates and assumptions, sign-insensitive, matched at the precision
+  written. "above 99%" and "below 1%" are allowed (A4 display). Counts written as numerals are
+  not allowed unless a tool returned them; the prompt asks the model not to invent numbers. The
+  general reason list moved here and gained `LOW_MODEL_RISK` and `NO_RULE_FLAGS`, so an approve
+  can cite something.
+- Problems: none.
+
+### E8. Review Gatekeeper — ✅ Done
+- Test: offline, every trigger together gave `CRITICAL_FLAG:…, VALIDATION_FAILED: …,
+  EXTRACTION_NEEDS_REVIEW, LOW_CONFIDENCE:0.50, TOOL_CALL_LIMIT_REACHED`; a clean case gave no
+  reasons. S04 was marked `CRITICAL_FLAG:INCOME_MISMATCH`. LLM turned off: the application was
+  still saved (`in_review`, `refer`, 3 calculations, 1 score, 2 documents) and marked
+  `LLM_UNAVAILABLE, EXTRACTION_NEEDS_REVIEW`. A missing bank statement stopped the application at
+  step 1 as `stopped_incomplete` with `document: bank_statement`.
+- Changes: `validation.py` (`gatekeeper`), `workflow.py`.
+- Decisions: every application goes to `in_review`. Validation failures are copied in full into
+  `review_reasons`. If the LLM is unreachable or fails mid-run, the recommendation is `refer` with
+  the phase 1 reason codes. A required form field missing raises an error and saves nothing (the
+  form already blocks it). Missing or rejected documents save the application as
+  `stopped_incomplete` with the missing items, as the workflow diagram shows.
+- Problems: none.

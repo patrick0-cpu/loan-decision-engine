@@ -100,20 +100,38 @@ def hash_matches(doc: Document) -> bool:
         return False
 
 
+def crop_to_content(img, margin: int = 20):
+    """Trim empty margins. The server downscales large images, and on a mostly blank page that
+    made small print unreadable (balances came back null); cropping keeps the text sharp.
+    Light marks such as a grey watermark don't count as content."""
+    from PIL import ImageOps
+
+    img = img.convert("RGB")
+    dark = ImageOps.invert(img.convert("L")).point(lambda v: 255 if v > 90 else 0)
+    box = dark.getbbox()
+    if not box:
+        return img
+    return img.crop((max(box[0] - margin, 0), max(box[1] - margin, 0),
+                     min(box[2] + margin, img.width), min(box[3] + margin, img.height)))
+
+
+def _png(img) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def page_images(doc: Document) -> list[bytes]:
-    """PNG bytes for each page: PDFs are rendered, images are passed through."""
+    """PNG bytes for each page, cropped to the content: PDFs are rendered first."""
+    from PIL import Image
+
     data = read_bytes(doc)
     if doc.mime_type != "application/pdf":
-        return [data]
+        return [_png(crop_to_content(Image.open(io.BytesIO(data))))]
     import pypdfium2 as pdfium
 
     pdf = pdfium.PdfDocument(data)
     try:
-        images = []
-        for page in pdf:
-            buf = io.BytesIO()
-            page.render(scale=RENDER_SCALE).to_pil().save(buf, format="PNG")
-            images.append(buf.getvalue())
-        return images
+        return [_png(crop_to_content(page.render(scale=RENDER_SCALE).to_pil())) for page in pdf]
     finally:
         pdf.close()
