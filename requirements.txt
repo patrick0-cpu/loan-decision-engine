@@ -1,0 +1,9 @@
+interpret-core
+sqlalchemy>=2.0
+pandas
+scikit-learn
+joblib
+streamlit
+plotly
+python-dotenv
+kagglehub

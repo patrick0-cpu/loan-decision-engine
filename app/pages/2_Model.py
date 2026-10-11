@@ -1,0 +1,102 @@
+from datetime import datetime
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from shared import REFERENCE_LINE, SERIES_1, no_model_warning, scorer, style_bars, term_label
+
+st.set_page_config(page_title="Model", page_icon="🧠", layout="wide")
+st.title("Model")
+
+model = scorer()
+if model is None:
+    no_model_warning()
+    st.stop()
+
+meta = model.metadata
+trained = datetime.fromisoformat(meta["trained_at"])
+st.markdown(f"**Version** `{meta['model_version']}` · **trained** {trained:%Y-%m-%d %H:%M} UTC · "
+            f"**predicts** {meta['predicts']} · **training rows** {meta['trained_rows']:,} "
+            f"(test rows {meta['test_rows']:,})")
+st.caption(meta["note"])
+
+metrics = meta["metrics"]
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("AUC", f"{metrics['auc']:.3f}")
+c2.metric("Accuracy at 0.5", f"{metrics['accuracy_at_0_5']:.1%}")
+c3.metric("Brier score", f"{metrics['brier_score']:.3f}", help="Lower is better")
+c4.metric("Test default rate", f"{metrics['test_default_rate']:.1%}")
+
+st.markdown(f"**Features** ({len(meta['features'])}): "
+            + ", ".join(term_label(f) for f in meta["features"]))
+st.markdown("**Excluded:** " + ", ".join(f"`{f}`" for f in meta["excluded_protected"])
+            + " (protected; fairness report only), "
+            + ", ".join(f"`{f}`" for f in meta.get("excluded_other", []))
+            + " (data artifact; handled by a rule)")
+
+st.subheader("Global feature importance")
+ebm = model.ebm
+importance = (pd.DataFrame({"term": ebm.term_names_, "importance": ebm.term_importances()})
+              .sort_values("importance", ascending=False))
+show_all = st.toggle(f"Show all {len(importance)} terms", value=False)
+shown = importance if show_all else importance.head(15)
+shown = shown.iloc[::-1]
+fig = go.Figure(go.Bar(
+    x=shown["importance"], y=[term_label(t) for t in shown["term"]], orientation="h",
+    marker_color=SERIES_1, hovertemplate="%{y}<br>%{x:.4f}<extra></extra>"))
+fig.update_xaxes(title="Mean absolute contribution (log-odds)")
+st.plotly_chart(style_bars(fig, height=60 + 28 * len(shown)), width="stretch", key="importance")
+st.caption("The EBM learns one shape function per feature plus pairwise interaction terms "
+           "(shown as A × B).")
+
+st.subheader("Fairness report (test set)")
+fair = meta["fairness"]
+st.caption(f"High risk = predicted probability at or above {fair['high_risk_threshold']}. "
+           "Favorable rate = share not flagged high risk. Each group's favorable rate is divided "
+           "by the best group's. Groups below the dashed "
+           f"{fair['four_fifths_line']} line fail the four-fifths rule of thumb.")
+
+
+def fairness_chart(records: list[dict]) -> go.Figure:
+    fig = go.Figure(go.Bar(
+        x=[r["group"] for r in records], y=[r["ratio_to_best"] for r in records],
+        marker_color=SERIES_1, text=[f"{r['ratio_to_best']:.2f}" for r in records],
+        textposition="outside", cliponaxis=False,
+        customdata=[[r["count"], r["favorable_rate"]] for r in records],
+        hovertemplate="%{x}<br>Ratio to best %{y:.3f}<br>Favorable rate %{customdata[1]:.1%}"
+                      "<br>%{customdata[0]:,} applicants<extra></extra>"))
+    fig.add_hline(y=fair["four_fifths_line"], line_dash="dash", line_color=REFERENCE_LINE,
+                  annotation_text=f"four-fifths line ({fair['four_fifths_line']})",
+                  annotation_position="bottom right")
+    fig.update_layout(height=340, barcornerradius=4, bargap=0.4, showlegend=False,
+                      margin=dict(l=10, r=10, t=30, b=10))
+    fig.update_yaxes(title="Favorable rate ÷ best group", range=[0, 1.12])
+    return fig
+
+
+left, right = st.columns(2)
+for col, title, key in [(left, "By gender", "by_gender"), (right, "By age band", "by_age_band")]:
+    with col:
+        st.markdown(f"**{title}**")
+        st.plotly_chart(fairness_chart(fair[key]), width="stretch", key=f"fair-{key}")
+        table = pd.DataFrame(fair[key]).rename(columns={
+            "group": "Group", "count": "Count", "avg_default_probability": "Avg. probability",
+            "share_high_risk": "Share high risk", "favorable_rate": "Favorable rate",
+            "ratio_to_best": "Ratio to best"})
+        st.dataframe(table, hide_index=True, width="stretch")
+
+if fair["warnings"]:
+    for w in fair["warnings"]:
+        st.warning(w, icon="⚠️")
+else:
+    st.success(f"No group falls below the {fair['four_fifths_line']} ratio.", icon="✅")
+
+st.markdown("**Possible age proxies** (correlation with age on the cleaned rows)")
+proxies = fair["age_proxy_correlations"]
+st.dataframe(pd.DataFrame({"Feature": [term_label(k) for k in proxies],
+                           "Correlation with age": list(proxies.values())}),
+             hide_index=True)
+st.caption("Both features are model inputs and track age closely, so the model can partly "
+           "reflect age even though age itself is excluded. Small groups (for example 50+) make "
+           "the ratios noisy.")
