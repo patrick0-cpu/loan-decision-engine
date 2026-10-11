@@ -1098,3 +1098,97 @@ other rows. Tests use database copies, as before.
   AI-use disclosure (draft), Decisions to revisit from Milestone 1.
 - Problems: my first draft said the S04 explanation had "8 figures"; recounting the E6 entry
   found 11, which is now corrected.
+
+### 10. README consistency check — ✅ Done (one section provisional)
+- Test: read the whole README against the code and this log. Checked every function, file,
+  folder, command, environment variable and table name it mentions; all exist. A scan for stale
+  wording found variant a only as the rejected alternative, heatmaps only as conditional, and the
+  one-sample comparison only where it is labelled provisional. All three diagrams parse after the
+  edits.
+- Corrections made:
+  1. The step table followed the branch table with no heading. Added "**Steps**".
+  2. In the workflow diagram, Resume pointed straight at step 4. The edge is now labelled "for
+     example, at step 4" (Resume continues from the first missing step).
+  3. The file tree lacked `eval/`, `requirements.txt`, `.env.example` and `BUILD_LOG.md`. Added.
+  4. Setup lacked `make_samples.py` and `eval/run_cases.py`. Both added to the command block, plus
+     `INTERRUPTED_AFTER_MINUTES`.
+  5. "Project status" linked to `CLAUDE.md` and `CLAUDE2.md`, which are no longer in the
+     repository. It now lists all three spec files as kept out of the repository and separates
+     done, waiting on the server, and planned.
+  6. **Code fix found while checking the "every LLM call is logged" claim**: on an LLM failure,
+     `continue_application` rolled the session back before logging the failure, which discarded
+     the failed calls' own audit rows. The rollbacks were removed. A test with every server call
+     mocked to fail shows both document-reader calls logged with `retried: true` and the error,
+     and the case marked `LLM_ERROR, EXTRACTION_NEEDS_REVIEW`.
+  7. Setup gained a Windows long-path note (from the fresh-clone test below).
+- **Fresh-clone test**: cloned the repository (checkpoint commit `d3ba647`) into a new temporary
+  folder, created a new virtual environment, built `.env` from `.env.example` and copied only the
+  LLM values from the real `.env`, then followed the README literally.
+  - First attempt (clone inside the scratch folder): `pip install -r requirements.txt` failed for
+    Streamlit with `OSError … No such file or directory` and pip's hint about **Windows long path
+    support**, because the folder path plus Streamlit's nested files passed 260 characters. Every
+    other step worked, but the dashboard couldn't start. **README gap → fixed** with the
+    long-path note.
+  - Second attempt (short folder `%TEMP%\lf`): install OK (Streamlit 1.65.0); `load_data.py`
+    loaded 45,000 rows (from the kagglehub cache, no new download); `--check` agreed;
+    training gave AUC 0.9204 and Brier 0.1108 (identical to the main build); `make_samples.py`
+    wrote 40 PDFs whose answer key and PDFs are **byte-identical** to the main `samples/`;
+    `eval/run_cases.py` gave the same 4 passes and 2 "not run"; the dashboard answered its health
+    check (HTTP 200). The clone's dashboard was stopped and both temporary folders were deleted.
+- README sections changed: Workflow (Steps heading, diagram edge label), Architecture (file
+  tree), Setup (commands, long-path note), Project status.
+
+### 11. Final checks and commit — ✅ Done
+- `git log --oneline` has a commit for phase 1, each part of phase 2 (A to G) and phase 2b.
+  `git log --all -- .env` prints nothing. `git status` lists `loans.db`, `.env`, `models/`,
+  `samples/` and `models_experiments/` only as ignored; `uploads/` is empty and ignored.
+  `eval/results/` holds only fictional sample data and is committed.
+- The real `loans.db` has `historical_loans` 45,000 rows, 0 rows in every application table, and
+  1 `audit_log` row: the live chat question described in Step 6, not a test.
+- Regression run on database copies: all six pages render. A1 rule tests and F1 queue tests
+  pass. Returning applicants (D) were re-verified through the workflow (two applications share
+  `applicant_id` 1, and the income change is logged). Two old scratch tests no longer apply: the
+  Part C test expects an Interactions section, which variant c removes by design, and the Part D
+  page test submits without documents, which stops at the completeness check since E9.
+
+## Phase 2b summary
+
+| Step | Status | Note |
+|---|---|---|
+| 1 Switch to variant c | ✅ Done | AUC 0.9204, matches B1 |
+| 2 Interrupted runs | ✅ Done | Real process kill; Resume and Mark as stopped; no step run twice |
+| 3 One retry on invalid output | ✅ Done | Mocked responses: fails once then passes, fails twice |
+| 4 Reason codes as an enum | ⚠️ Done with issues | Per-application enum built; server enforcement not tested (server unreachable) |
+| 5 Re-run checks after a correction | ✅ Done | `INCOME_MISMATCH` removed, old row kept, changes logged |
+| 6 Evaluation script | ⚠️ Done with issues | 4 of 6 cases pass; the two LLM cases not run (server unreachable) |
+| 7 Compare models on 20 samples | ❌ Blocked | Stop condition 1: school server unreachable |
+| 8 Diagrams | ✅ Done | Three diagrams parse and render in Mermaid 10.9.1 |
+| 9 Report material | ✅ Done | Model-choice record provisional (one sample) |
+| 10 README consistency check | ✅ Done | 7 corrections, fresh-clone test passed after the long-path note |
+| 11 Final checks and commit | ✅ Done | |
+
+**Stop condition reached:** CLAUDE2.md stop condition 1. The school LLM server
+(`gpu-01.insight.gsu.edu`) stopped resolving during Step 2 (`NameResolutionError`; the internet
+works, so the machine is off the campus network or VPN). Every step that doesn't depend on it was
+finished; the dependent parts are listed below.
+
+## Waiting for the user (updated)
+
+1. **Reconnect to the school server** (campus network or VPN), then run, in order:
+   - `python eval/run_cases.py --compare qwen3.5:latest,qwen3.5:35b --samples all` (Step 7,
+     about an hour). Apply the result to `LLM_MODEL_ACTIVE` in `.env`, and replace the README's
+     provisional "Model comparison" table and decision record with the 20-sample numbers.
+   - `python eval/run_cases.py` for the two LLM cases (clean sample with officer decision;
+     planted mismatch), and update the README test-case table.
+   - The Step 4 check that the server enforces the reason-code enum.
+2. **Milestone 1 measurable outcome:** `CLAUDE3.md` left it blank, so the evaluation reports
+   time per application, extraction accuracy and planted mismatches caught. Fill it in if there is
+   a specific target.
+3. **Review the drafts:** the case interpretations in `eval/results/…/cases.md`, the README's
+   "AI-use disclosure (draft)", and the empty "Decisions to revisit from Milestone 1".
+4. **README links:** `CLAUDE.md`, `CLAUDE2.md` and `CLAUDE3.md` are kept out of the repository,
+   so the README names them without links. Publish them if reviewers should see the specs.
+5. **Still open from earlier phases:** `LLM_MODEL` equals `LLM_MODEL_FINAL` in `.env`;
+   `LLM_BASE_URL` ends in `/api/generate` (works, but the server root is cleaner); screenshots
+   under `docs/`; older model files in `models/` (kept on purpose: the waterfall of a stored score
+   needs its model file); `kaleido` in `.venv` only for chart checks.

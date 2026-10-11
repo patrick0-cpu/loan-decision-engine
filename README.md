@@ -583,6 +583,11 @@ approval.
 
 Requirements: Python 3.11+ on Windows, macOS or Linux. No database server: SQLite is built in.
 
+On Windows, clone into a short path such as `C:\loan_system`, or enable
+[long path support](https://pip.pypa.io/warnings/enable-long-paths): Streamlit's package contains
+deeply nested files, and in a deep folder `pip` fails with "No such file or directory" and
+leaves Streamlit uninstalled.
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
