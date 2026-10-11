@@ -7,3 +7,6 @@ streamlit
 plotly
 python-dotenv
 kagglehub
+requests
+pypdfium2
+fpdf2

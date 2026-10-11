@@ -118,13 +118,19 @@ class Application(Base):
 
 
 class Document(Base):
-    """File location only, not the file itself."""
+    """File location only, not the file itself. The SHA-256 proves later that the file on disk
+    is the one that was reviewed."""
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"))
     doc_type: Mapped[str] = mapped_column(String(50))
     storage_path: Mapped[str] = mapped_column(String(500))
+    original_filename: Mapped[Optional[str]] = mapped_column(String(300))
+    mime_type: Mapped[Optional[str]] = mapped_column(String(100))
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    page_count: Mapped[Optional[int]] = mapped_column(Integer)
     uploaded_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     application: Mapped[Application] = relationship(back_populates="documents")
@@ -132,7 +138,7 @@ class Document(Base):
 
 
 class ExtractedField(Base):
-    """Document Reader output (later phase)."""
+    """Document Reader output, plus fields computed by code from it (e.g. annual income)."""
     __tablename__ = "extracted_fields"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -142,6 +148,8 @@ class ExtractedField(Base):
     confidence: Mapped[Optional[float]] = mapped_column(Float)
     source_page: Mapped[Optional[int]] = mapped_column(Integer)
     verified_by_human: Mapped[bool] = mapped_column(Boolean, default=False)
+    extraction_model: Mapped[Optional[str]] = mapped_column(String(100))
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
 
     document: Mapped[Document] = relationship(back_populates="extracted_fields")
 
@@ -256,6 +264,29 @@ def _resolve_url(url: str) -> str:
     return parsed.render_as_string(hide_password=False)
 
 
+def _upgrade_document_tables(engine: Engine) -> None:
+    """Phase 2 added columns to documents and extracted_fields. SQLite can't add them in place
+    cleanly, so the two tables are recreated, but only while both are empty. Rows in any other
+    table are never touched."""
+    insp = inspect(engine)
+    have = {c["name"] for c in insp.get_columns("documents")}
+    have_fields = {c["name"] for c in insp.get_columns("extracted_fields")}
+    want = {c.name for c in Document.__table__.columns}
+    want_fields = {c.name for c in ExtractedField.__table__.columns}
+    if want <= have and want_fields <= have_fields:
+        return
+    with engine.begin() as conn:
+        counts = {t: conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+                  for t in ("documents", "extracted_fields")}
+        if any(counts.values()):
+            raise RuntimeError(
+                f"documents/extracted_fields need new columns but hold rows {counts}. "
+                "They are only recreated when empty; migrate them by hand.")
+        conn.execute(text("DROP TABLE extracted_fields"))
+        conn.execute(text("DROP TABLE documents"))
+    Base.metadata.create_all(engine, tables=[Document.__table__, ExtractedField.__table__])
+
+
 def get_engine() -> Engine:
     load_dotenv(PROJECT_ROOT / ".env")
     url = _resolve_url(os.getenv("DATABASE_URL") or DEFAULT_URL)
@@ -272,6 +303,7 @@ def get_engine() -> Engine:
             cur.close()
 
     Base.metadata.create_all(engine)
+    _upgrade_document_tables(engine)
     if is_sqlite:
         # The ORM guard above can be bypassed with raw SQL; these triggers cannot.
         with engine.begin() as conn:

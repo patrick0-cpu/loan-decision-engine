@@ -450,3 +450,76 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   *later*, since a later application can also matter to the officer.
 - Problems: the AppTest `format_func` issue (see C3) also affected the page 4 selector. Fixed the
   same way.
+
+### Part E. The LLM layer
+
+### E0. Connection settings and test — ✅ Done
+- Test: `GET /api/tags` → 200 in 0.2 s, 17 models including `qwen3.5:latest` and `qwen3.5:35b`.
+  `POST /api/chat` to `LLM_MODEL` (`qwen3.5:35b`, thinking off, temperature 0, `num_ctx` 32768)
+  → 200 in 10.3 s, reply `"connection ok"`. Auth is `Authorization: Bearer <key>` on Ollama's
+  native API, as the spec assumed. The key was never printed (only its length was checked).
+- Changes: `.env` (added `LLM_MODEL_FINAL=qwen3.5:35b`, `LLM_NUM_CTX=32768`,
+  `LLM_TIMEOUT_SECONDS=120`; existing values untouched), `.env.example` (names only, plus
+  `LLM_MODEL_ACTIVE` for E10).
+- Decisions: your `LLM_BASE_URL` ends in `/api/generate`. The client strips any trailing
+  `/api/...` path and calls `/api/tags` and `/api/chat` on the server root, so the value works
+  as it is. Setting it to `https://gpu-01.insight.gsu.edu:11443` would be cleaner. **Your
+  `LLM_MODEL` is `qwen3.5:35b`, the same as `LLM_MODEL_FINAL`.** I left it unchanged. See E10
+  for how the comparison handles this.
+- Problems: none.
+
+### E1. `llm.py`: one small client — ✅ Done
+- Test (database copy): plain reply ("Hello", 1.3 s); JSON-schema reply parsed as
+  `{"city": "Paris", "country": "France"}`; a tool call with thinking on returned
+  `get_application({"application_id": 42})`; an image call read the number from a small PNG.
+  A 0.001 s timeout retried once and then raised `LLMError` with no key in the message. Five
+  `audit_log` rows were written with actor `model` (model, purpose, duration, tool calls,
+  image count, retry flag, error). Neither the key nor any base64 image data appears in them.
+- Changes: new `llm.py` (`chat`, `available`, `list_models`, `active_model`, `settings`,
+  `LLMError`). `requirements.txt` gains `requests`, `pypdfium2` and `fpdf2` (fpdf2 is for E3).
+- Decisions: `chat()` takes messages, images (attached to the last user message), a JSON schema
+  (Ollama `format`), tools and `think`. Every call sends `temperature: 0` and `num_ctx` from
+  `.env`. The audit row goes into the caller's session when one is given (so it commits with the
+  application's other rows), otherwise it is committed on its own. Failed calls are audited too.
+  The model defaults to `LLM_MODEL_ACTIVE`, falling back to `LLM_MODEL`.
+- Problems: the first version recorded `retried: false` after a retry, because the second
+  attempt overwrote the flag. Fixed and retested.
+
+### E2. Document storage — ✅ Done
+- Test (database copy, uploads in a scratch folder): the tables were upgraded from the old
+  columns to the new ones. Stored a 2-page PDF and a PNG with filename, MIME type (detected from
+  the file signature), size, SHA-256 and page count. Rejected a text file ("Only PDF, PNG and JPG
+  files are accepted"), an 11.5 MB file and a broken PDF. The PDF rendered to 2 PNG page images.
+  `hash_matches()` was true, then false after the file was modified on disk. On a second copy
+  with a row in `documents`, `get_engine()` refused to recreate the tables and the row was kept.
+- Real `loans.db`: confirmed `documents` 0 rows and `extracted_fields` 0 rows, then opened it.
+  Both tables now have the new columns. `historical_loans` still has 45,000 rows, and
+  `applications` and `audit_log` are still empty.
+- Changes: `db.py` (new columns on `Document` and `ExtractedField`; `_upgrade_document_tables()`
+  drops and recreates only these two tables, only when both are empty, and raises an error
+  otherwise). New `documents.py` (`save_document`, `page_images`, `hash_matches`, `read_bytes`).
+- Decisions: the file type is checked from its first bytes, not the file name. Files are saved as
+  `uploads/<application_id>/<doc_type>-<first 12 hex of sha256>.<ext>`, and the path is stored
+  relative to the project. PDF pages are rendered at 144 dpi (scale 2). `UPLOADS_DIR` can
+  redirect storage (used by tests so the real `uploads/` stays empty). Document types:
+  `pay_stub` and `bank_statement`.
+- Problems: none.
+
+### E3. Sample documents for testing — ✅ Done
+- Test: `python make_samples.py` wrote 40 PDFs (20 pay stubs, 20 two-page bank statements) and
+  `samples/answer_key.json`. A text extraction of every page found the watermark
+  "SAMPLE - NOT A REAL DOCUMENT" on all of them (0 pages missing it). It is printed three times
+  per page: a red header, a grey diagonal across the page, and the footer. Planted mismatches:
+  S01, S04, S08, S09, S17, with pay stub income at 1.23×, 1.31×, … of stated income (factors
+  between 1.2 and 1.4 are in the key). Rendered pages were checked by eye. `git status` doesn't
+  list `samples/`.
+- Changes: new `make_samples.py`.
+- Decisions: the 20 applicants are a seeded random sample (seed 42) of the cleaned rows, and the
+  key holds each one's form values so E10 can run the full workflow. Pay periods are randomly
+  weekly, biweekly, semimonthly or monthly, with gross pay = income × factor ÷ periods per year.
+  Pay stubs also print net pay and deductions, so the reader has to pick gross. The bank
+  statement puts balances on page 1 and transactions plus total deposits on page 2, which tests
+  the page numbers. Deposits always match stated income (two payroll deposits of income ÷ 24),
+  so in a planted case the pay stub disagrees with both the form and the bank statement. All
+  names are fictional and tagged "(sample Sxx)".
+- Problems: none.
