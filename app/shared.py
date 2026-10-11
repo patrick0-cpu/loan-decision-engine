@@ -120,6 +120,18 @@ def show_flag(flag):
         st.info(text, icon="ℹ️")
 
 
+def format_probability(p) -> str:
+    """Display only: a fitted model is never certain, so extremes show as bounds. Stored values
+    are unchanged."""
+    if p is None:
+        return ""
+    if p > 0.99:
+        return "above 99%"
+    if p < 0.01:
+        return "below 1%"
+    return f"{p:.1%}"
+
+
 def format_calc(metric: str, value) -> str:
     if value is None:
         return "n/a"
@@ -164,7 +176,7 @@ def show_application(app: Application):
         st.info("No risk score recorded.")
     else:
         c1, c2 = st.columns([1, 3])
-        c1.metric("Probability of default", f"{score.default_probability:.1%}")
+        c1.metric("Probability of default", format_probability(score.default_probability))
         c1.caption(f"Model {score.model_version}. Trained on synthetic data; a prototype score, "
                    "not a real-world estimate.")
         with c2:

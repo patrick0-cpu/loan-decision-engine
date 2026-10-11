@@ -272,6 +272,14 @@ def get_engine() -> Engine:
             cur.close()
 
     Base.metadata.create_all(engine)
+    if is_sqlite:
+        # The ORM guard above can be bypassed with raw SQL; these triggers cannot.
+        with engine.begin() as conn:
+            for op in ("UPDATE", "DELETE"):
+                conn.execute(text(
+                    f"CREATE TRIGGER IF NOT EXISTS audit_log_no_{op.lower()} "
+                    f"BEFORE {op} ON audit_log "
+                    f"BEGIN SELECT RAISE(ABORT, 'audit_log rows are append-only'); END"))
     return engine
 
 

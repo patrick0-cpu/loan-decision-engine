@@ -86,6 +86,11 @@ def check_rules(app: dict[str, Any], calcs: list[CalcResult],
     values = {c.metric: c.value for c in calcs}
     flags: list[RuleFlag] = []
 
+    # Checked first: without income both ratios are None, so the ratio rules below cannot fire.
+    income = app.get("person_income")
+    if income is None or income <= 0:
+        flags.append(RuleFlag("INCOME_MISSING", "critical", {"value": income, "limit": "> 0"}))
+
     pti = values.get("payment_to_income")
     if pti is not None and pti >= RULES["max_payment_to_income"]:
         flags.append(RuleFlag("PAYMENT_TO_INCOME_HIGH", "warning",

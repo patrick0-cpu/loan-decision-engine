@@ -3,7 +3,7 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared import engine, latest, show_application
+from shared import engine, format_probability, latest, show_application
 
 st.set_page_config(page_title="Officer review queue", page_icon="👤", layout="wide")
 
@@ -43,11 +43,10 @@ with Session(engine()) as s:
             "Application": a.id, "Applicant": a.applicant.full_name,
             "Marked": "🚩 yes" if is_marked(a) else "",
             "Loan amount": a.loan_amount,
-            "Default probability": score.default_probability if score else None,
+            "Default probability": format_probability(score.default_probability) if score else "",
             "Flags": len(a.flags), "Submitted (UTC)": a.created_at.strftime("%Y-%m-%d %H:%M")})
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
-        "Loan amount": st.column_config.NumberColumn(format="%,.0f"),
-        "Default probability": st.column_config.NumberColumn(format="percent")})
+        "Loan amount": st.column_config.NumberColumn(format="%,.0f")})
     st.caption("Marked cases (at least one critical flag) are listed first.")
 
     labels = {a.id: f"#{a.id}: {a.applicant.full_name}" + ("  🚩 marked" if is_marked(a) else "")

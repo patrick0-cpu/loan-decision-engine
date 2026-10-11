@@ -240,3 +240,76 @@ in `CLAUDE.md`.
 **Later phase (out of scope):** Document Reader, pattern review, Decision Coordinator.
 
 ## Phase 2 (from `CLAUDE2.md`)
+
+Started 2026-10-11. Before any change: `historical_loans` 45,000 rows, every other table 0 rows.
+`git status` confirmed `loans.db`, `.env`, `models/`, `uploads/`, `samples/` and
+`models_experiments/` are ignored (the last three were added to `.gitignore`). Baseline commit
+`cb306e5` holds phase 1 so it can be restored.
+
+Tests run from scripts in a scratch folder (not committed), against the real code. Every test
+that writes to a database uses a copy of `loans.db` selected through `DATABASE_URL`.
+
+### Part A. Fixes from the README review
+
+### A1. INCOME_MISSING rule — ✅ Done
+- Test: test 1 (payment 789.85, PTI 0.1975, the four expected flags) and test 2 (no flags) still
+  pass. Income 0, −5 and missing each give only `INCOME_MISSING` with evidence
+  `{"value": <income>, "limit": "> 0"}`. Income 0 with credit score 500 and a prior default gives
+  `INCOME_MISSING`, `CREDIT_SCORE_BELOW_MINIMUM`, `PREVIOUS_DEFAULT_ON_FILE`.
+- Changes: `calculations.py` (`check_rules`).
+- Decisions: the check runs first, so `INCOME_MISSING` is always the first flag in the list.
+  `INCOME_MISMATCH` already skips a zero stated income, so it can't fire alongside.
+- Problems: none.
+
+### A2. Audit log protected in the database — ✅ Done
+- Test: on a copy of `loans.db`, wrote one audit row, then ran raw-SQL
+  `UPDATE audit_log SET action='x'` and `DELETE FROM audit_log`. Both failed with
+  `IntegrityError: audit_log rows are append-only`, and the row was unchanged. A second
+  `get_engine()` call ran cleanly (`IF NOT EXISTS`).
+- Changes: `db.py` (`get_engine` creates triggers `audit_log_no_update` and `audit_log_no_delete`).
+- Decisions: triggers use `RAISE(ABORT, ...)`, so the whole statement is rolled back. They are
+  created only for SQLite, because the syntax is SQLite-specific. The ORM guard stays.
+- Problems: none. The real `loans.db` gets the triggers the next time `get_engine()` opens it
+  (a schema addition only, no rows touched).
+
+### A3. Fairness compared to the largest group — ✅ Done
+- Test: recomputed the report for the current model (`ebm-20261010T143918Z`) on the same test
+  split (no retraining):
+
+  | Gender | Count | Favorable rate | Ratio to largest (male) | Sample |
+  |---|---|---|---|---|
+  | female | 1,972 | 0.6060 | 1.0135 | |
+  | male | 2,457 | 0.5979 | 1.0000 | |
+
+  | Age band | Count | Favorable rate | Ratio to largest (25-34) | Sample |
+  |---|---|---|---|---|
+  | <25 | 1,514 | 0.5727 | 0.9390 | |
+  | 25-34 | 2,353 | 0.6099 | 1.0000 | |
+  | 35-49 | 506 | 0.6403 | 1.0499 | |
+  | 50+ | 56 | 0.6786 | 1.1127 | small sample |
+
+  No group is below 0.8. Under-25s improve from 0.844 (against the best group) to 0.939 (against
+  the largest group).
+- Changes: `train_ebm.py` (`fairness_table` gives `ratio_to_largest` and `small_sample`; the
+  warnings mention small samples). `app/pages/2_Model.py` (charts and tables show group size and
+  grey out small-sample groups; it falls back to `ratio_to_best` for models trained earlier).
+- Decisions: "largest" means the most people in the category within the test set. Ratios can go
+  above 1.0, so the chart's y-axis now reaches 1.3. Small groups still get a warning when they are
+  below 0.8, labelled as a small sample. The B1 rule ignores them, as the spec says.
+- Problems: my first patch script wrote a literal line break inside an f-string (`\n` escaping
+  through a heredoc). I rewrote `train_ebm.py` in full and the syntax check passed.
+- Also in this step, because B1 and C1/C2 need it: `train_ebm.py` was restructured into `split()`,
+  `fit()`, `fairness_report()`, `performance_data()` and `explanation_data()`, with new options
+  `--interactions N` and `--drop FEATURE ...`. The defaults are unchanged.
+
+### A4. No more "1.0" probabilities on screen — ✅ Done
+- Test: AppTest on a database copy. Scored the step 3 test applicant (probability 0.99999987).
+  Page 3 shows "above 99%" and the page 4 queue shows "above 99%". The helper's own checks:
+  0.995 → "above 99%", 0.99 → "99.0%", 0.01 → "1.0%", 0.009 → "below 1%". All six pages render
+  with no exceptions.
+- Changes: `app/shared.py` (`format_probability`, used in the application view),
+  `app/pages/4_Officer_review_queue.py`.
+- Decisions: the boundaries are strict, as the spec says (above 0.99, below 0.01), so exactly 0.99
+  shows "99.0%". Fairness tables show group averages, not an individual's probability, so they
+  stay numeric.
+- Problems: the AppTest harness needed `app/` on `sys.path`, which `streamlit run` adds itself.
