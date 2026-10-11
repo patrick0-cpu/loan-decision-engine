@@ -634,3 +634,59 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   form already blocks it). Missing or rejected documents save the application as
   `stopped_incomplete` with the missing items, as the workflow diagram shows.
 - Problems: none.
+
+### E9. Dashboard integration — ✅ Done
+- Test (AppTest, database copy holding the S04 workflow run from E6): page 3 shows both
+  uploaders and the line "LLM steps use qwen3.5:35b on the school server". The result view shows
+  Documents and extracted fields (2 view/download buttons, hash check), Calculations, Flags
+  (rule + pattern), Model risk score, and Recommendation ("🔴 DENY · confidence 0.95 ·
+  validation: ✅ passed"). On page 4 the officer sees the Coordinator's explanation and the review
+  reasons, then confirmed `gross_pay`. The field was saved with `verified_by_human = True` and an
+  audit row `human:Officer Test · confirmed extracted field`. All six pages render with no
+  exceptions. The live progress display was exercised by the E6 workflow run (same callback); a
+  file upload through AppTest isn't possible (AppTest has no file-upload support).
+- Changes: `app/pages/3_Score_an_applicant.py` (uploaders, `workflow.run_application`, progress
+  per step in an `st.status` box; the manual "documented income" field is gone, since documents
+  replace it). `app/shared.py` (`show_documents`, `show_recommendation`, pattern flags with their
+  cited evidence, `llm_status`, a stopped-incomplete notice). `app/pages/4_Officer_review_queue.py`
+  (verify-field form; reason codes come from `validation.GENERAL_REASONS`).
+- Decisions: "view link" is a View / download button that serves the stored file only if its
+  SHA-256 still matches. A changed or missing file shows 🛑 and no button. Confirming or
+  correcting a field requires the officer's name and records old → new in the audit log.
+  Corrections don't re-run the rules or the Coordinator; the page says so. If the server is
+  down, page 3 says so and runs the workflow with the LLM steps skipped.
+- Problems: the verification message read an attribute after its session closed
+  (`DetachedInstanceError`); fixed. Because the audit log is append-only, the failed attempt's
+  row stayed on the test copy, which is correct behaviour.
+
+### E10. Evaluation — ⚠️ Done with issues (one sample instead of twenty)
+- Test: the full workflow (steps 1-9) on a database copy, once per model, on **one sample (S09,
+  a planted mismatch)**. You asked mid-build to test one document instead of all of them. Your
+  `.env` sets `LLM_MODEL` and `LLM_MODEL_FINAL` both to `qwen3.5:35b`, so comparing them would
+  compare a model with itself. The comparison therefore used the spec's development model,
+  `qwen3.5:latest`, against `qwen3.5:35b`.
+
+  | Model | Extraction field accuracy | Valid JSON | Planted mismatches caught | False mismatch flags | Validation pass | Seconds per application |
+  |---|---|---|---|---|---|---|
+  | `qwen3.5:latest` | 10/10 (100%) | 2/2 | 1/1 | 0/0 (no clean sample run) | 1/1 (100%) | 101.3 |
+  | `qwen3.5:35b` | 10/10 (100%) | 2/2 | 1/1 | 0/0 (no clean sample run) | 0/1 (0%) | 60.8 |
+
+  Both recommended deny (confidence 0.95) and were marked `CRITICAL_FLAG:INCOME_MISMATCH`.
+  `qwen3.5:35b` failed validation by citing the reason code `FLAG:INCOME_MISMATCH`, which is not
+  a real code. The check caught it, the recommendation stayed visible, and the application was
+  marked `VALIDATION_FAILED`. `qwen3.5:latest`'s pattern review also produced
+  `FORM_INCOME_MISMATCH_PAY_STUB`.
+  For context, the E4 run with `qwen3.5:35b` scored 200/200 on extraction across all 20 samples.
+- **Decision (E10 rule): `LLM_MODEL_ACTIVE=qwen3.5:latest`.** The smaller model is within 5
+  points on extraction (100% vs 100%), catches as many planted mismatches (1 vs 1), and its
+  validation pass rate is not lower (100% vs 0%; "within 5 points" was read as "not more than 5
+  points worse"). Set in `.env` and named in `.env.example`.
+- Caveats: one sample per model can't separate the models. The validation result for each is a
+  single coin flip, and the false-flag column is untested. `qwen3.5:latest` was slower here,
+  probably because the server had to load it first (the 35b model was already warm from earlier
+  runs). Rerun on all 20 with
+  `eval_e10.py "qwen3.5:latest,qwen3.5:35b" S01,…,S20` style before relying on this choice. To
+  switch, change `LLM_MODEL_ACTIVE`.
+- Changes: `.env` (`LLM_MODEL_ACTIVE`). The evaluation script lives in the scratch test folder,
+  like the other tests.
+- Problems: none in the code.

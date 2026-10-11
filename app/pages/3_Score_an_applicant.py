@@ -2,13 +2,13 @@ import streamlit as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from shared import engine, historical, no_model_warning, scorer, show_application
+from shared import engine, historical, llm_status, no_model_warning, scorer, show_application
 
 st.set_page_config(page_title="Score an applicant", page_icon="📝", layout="wide")
 
-from calculations import FORMULAS, check_rules, run_calculations  # noqa: E402
-from db import (Applicant, Application, Calculation, Flag, Recommendation, RiskScore,  # noqa: E402
-                log)
+from db import Applicant, Application  # noqa: E402
+from documents import MAX_BYTES  # noqa: E402
+from workflow import PROFILE, STEPS, run_application  # noqa: E402
 
 st.title("Score an applicant")
 st.caption("Gender and age are not collected here: the model never uses them. The result is a "
@@ -22,100 +22,6 @@ if model is None:
 
 def options(column: str) -> list[str]:
     return sorted(historical(clean=True)[column].dropna().unique())
-
-
-# Applicant profile columns and the form fields they come from.
-PROFILE = {"education": "person_education", "annual_income": "person_income",
-           "employment_years": "person_emp_exp", "home_ownership": "person_home_ownership",
-           "credit_score": "credit_score", "credit_history_years": "cb_person_cred_hist_length"}
-
-
-def score_application(form: dict, applicant_id: int | None = None) -> int:
-    """Run the pipeline in order and save every step. Returns the new application id.
-    With applicant_id, the new application is linked to that existing applicant."""
-    with Session(engine()) as s:
-        # 1. Applicant and application
-        profile = {col: form[field] for col, field in PROFILE.items()}
-        profile["previous_defaults"] = form["previous_loan_defaults_on_file"] == "Yes"
-        changes = {}
-        if applicant_id is None:
-            applicant = Applicant(full_name=form["full_name"], age=None, gender=None, **profile)
-        else:
-            applicant = s.get(Applicant, applicant_id)
-            # The applicant row holds the latest profile; each application keeps the values it
-            # was scored with in its calculations and audit entries.
-            for col, value in profile.items():
-                if getattr(applicant, col) != value:
-                    changes[col] = [getattr(applicant, col), value]
-                    setattr(applicant, col, value)
-        application = Application(
-            applicant=applicant, loan_amount=form["loan_amnt"], loan_intent=form["loan_intent"],
-            interest_rate=form["loan_int_rate"], term_months=form["term_months"],
-            status="submitted", current_step="intake")
-        s.add(application)
-        s.flush()
-        app_id = application.id
-        log(s, "intake", "code",
-            "created applicant and application" if applicant_id is None
-            else "created application for existing applicant", app_id,
-            applicant_id=applicant.id, returning_applicant=applicant_id is not None,
-            profile_changes=changes, loan_amount=form["loan_amnt"],
-            stated_income=form["person_income"],
-            loan_percent_income_provided=form["loan_percent_income"] is not None)
-
-        # 2. Calculations
-        application.current_step = "calculations"
-        calcs = run_calculations(form)
-        for c in calcs:
-            s.add(Calculation(application_id=app_id, metric=c.metric, value=c.value,
-                              inputs=c.inputs, code_used=FORMULAS[c.metric],
-                              assumptions=c.assumptions))
-        log(s, "calculations", "code", "ran financial calculations", app_id,
-            results={c.metric: c.value for c in calcs})
-
-        # 3. Rule checks
-        application.current_step = "rule_check"
-        flags = check_rules(form, calcs, documented_income=form["documented_income"])
-        for f in flags:
-            s.add(Flag(application_id=app_id, code=f.code, source="rule", severity=f.severity,
-                       evidence=f.evidence))
-        log(s, "rule_check", "code", "checked rules", app_id,
-            flags=[{"code": f.code, "severity": f.severity} for f in flags])
-
-        # 4. Risk score. If loan_percent_income was left blank, the model gets the calculated ratio.
-        application.current_step = "risk_scoring"
-        model_input = dict(form)
-        if model_input["loan_percent_income"] is None:
-            model_input["loan_percent_income"] = round(form["loan_amnt"] / form["person_income"], 2)
-        result = model.score(model_input)
-        s.add(RiskScore(application_id=app_id, model_version=result["model_version"],
-                        default_probability=result["default_probability"],
-                        contributions=result["contributions"]))
-        log(s, "risk_scoring", "model", "scored default risk", app_id,
-            model_version=result["model_version"],
-            default_probability=result["default_probability"],
-            top_risk_drivers=result["top_risk_drivers"],
-            loan_percent_income_used=model_input["loan_percent_income"])
-
-        # 5. Recommendation: always refer to an officer
-        application.current_step = "recommendation"
-        critical = [f.code for f in flags if f.severity == "critical"]
-        reason_codes = ([f"MODEL_DRIVER:{name}" for name, _ in result["top_risk_drivers"]]
-                        + [f.code for f in flags])
-        s.add(Recommendation(application_id=app_id, recommendation="refer",
-                             reason_codes=reason_codes, confidence=None, passed_validation=None,
-                             marked_for_additional_review=bool(critical),
-                             review_reasons=critical))
-        log(s, "recommendation", "code", "recommended refer to officer", app_id,
-            reason_codes=reason_codes, marked_for_additional_review=bool(critical))
-
-        # 6. Hand over to the officer
-        application.status = "in_review"
-        application.current_step = "officer_review"
-        log(s, "status", "code", "status set to in_review", app_id, status="in_review")
-
-        s.commit()
-        return app_id
 
 
 kind = st.radio("Applicant", ["New applicant", "Existing applicant"], horizontal=True,
@@ -194,10 +100,20 @@ with st.form(form_key):
         previous_default = st.radio("Previous loan default on file *", ["No", "Yes"],
                                     horizontal=True, index=1 if default("previous_defaults") else 0,
                                     help="Used by the rule check only, not by the model.")
-        documented_income = st.number_input(
-            "Documented income (optional)", min_value=0.0, value=None, step=1000.0, format="%.0f",
-            help="Income shown on supporting documents. Compared with stated income.")
-    submitted = st.form_submit_button("Score applicant", type="primary")
+    st.markdown("**Documents** (PDF, PNG or JPG, up to "
+                f"{MAX_BYTES // (1024 * 1024)} MB each). Both are required; without them the "
+                "application stops at the completeness check.")
+    d1, d2 = st.columns(2)
+    pay_stub = d1.file_uploader("Pay stub *", type=["pdf", "png", "jpg", "jpeg"])
+    bank_statement = d2.file_uploader("Bank statement *", type=["pdf", "png", "jpg", "jpeg"])
+    submitted = st.form_submit_button("Run the workflow", type="primary")
+
+ok, model_name = llm_status()
+if ok:
+    st.caption(f"LLM steps use **{model_name}** on the school server.")
+else:
+    st.warning("The LLM server is unavailable. Applications are still saved with calculations, "
+               "rule checks and the risk score, and marked LLM_UNAVAILABLE for review.", icon="⚠️")
 
 if submitted:
     form = dict(full_name=(full_name or "").strip(), person_income=person_income,
@@ -206,18 +122,37 @@ if submitted:
                 loan_intent=loan_intent, loan_int_rate=loan_int_rate,
                 loan_percent_income=loan_percent_income, term_months=term_months,
                 credit_score=credit_score, cb_person_cred_hist_length=cb_person_cred_hist_length,
-                previous_loan_defaults_on_file=previous_default,
-                documented_income=documented_income)
-    optional = {"loan_percent_income", "term_months", "documented_income"}
+                previous_loan_defaults_on_file=previous_default)
+    optional = {"loan_percent_income", "term_months"}
     missing = [k for k, v in form.items() if k not in optional and v in (None, "")]
     if missing:
         st.error("Please fill in: " + ", ".join(k.replace("_", " ") for k in missing))
     else:
-        try:
-            st.session_state["scored_app_id"] = score_application(
-                form, applicant_id=existing[0] if existing else None)
-        except Exception as exc:  # nothing is saved: the transaction rolls back
-            st.error(f"Scoring failed and nothing was saved: {exc}")
+        files = {t: (f.name, f.getvalue()) for t, f in
+                 (("pay_stub", pay_stub), ("bank_statement", bank_statement)) if f is not None}
+        icons = {"running": "⏳", "done": "✅", "skipped": "⏭️", "failed": "⚠️"}
+        with st.status("Running the workflow…", expanded=True) as status:
+            lines = {step: st.empty() for step in STEPS}
+            for step in STEPS:
+                lines[step].markdown(f"▫️ {step}")
+
+            def progress(step, state, detail):
+                text = f"{icons.get(state, '')} **{step}**" + (f": {detail}" if detail else "")
+                lines[step].markdown(text)
+
+            try:
+                result = run_application(form, files, engine=engine(), scorer=model,
+                                         applicant_id=existing[0] if existing else None,
+                                         model=model_name if ok else None, use_llm=ok,
+                                         progress=progress)
+                st.session_state["scored_app_id"] = result.application_id
+                label = ("Stopped: application incomplete" if result.status == "stopped_incomplete"
+                         else "Done: the application is waiting for officer review")
+                status.update(label=label, state="error" if result.stopped_incomplete
+                              else "complete", expanded=bool(result.stopped_incomplete))
+            except Exception as exc:  # steps already finished stay saved with their audit rows
+                status.update(label="The workflow failed", state="error")
+                st.error(f"The workflow failed: {exc}")
 
 app_id = st.session_state.get("scored_app_id")
 if app_id is not None:

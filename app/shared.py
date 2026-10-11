@@ -84,6 +84,14 @@ def baseline_log_odds(model_version: str) -> float | None:
     return _load_scorer(str(path)).baseline_log_odds
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def llm_status() -> tuple[bool, str]:
+    """(server reachable, active model name), rechecked at most once a minute."""
+    import llm
+
+    return llm.available(), llm.active_model()
+
+
 def no_model_warning():
     st.warning("No trained model yet. Run `python train_ebm.py --check`, then "
                "`python train_ebm.py --target-means default`, and reload this page.")
@@ -243,10 +251,16 @@ def pair_heatmap(shape: dict) -> go.Figure:
 
 def show_flag(flag):
     evidence = dict(flag.evidence)
-    value, limit = evidence.pop("value", None), evidence.pop("limit", None)
-    extra = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in evidence.items())
-    text = f"**{flag.severity.upper()}: {flag.code}**. Value {value}, limit {limit}"
-    text += f" ({extra})" if extra else ""
+    if flag.source == "pattern":
+        cited = "; ".join(f"{c['document']} · {c['field']} = {c['value']}"
+                          for c in evidence.get("cited", []))
+        text = (f"**{flag.severity.upper()} (pattern review): {flag.code}**. "
+                f"{evidence.get('description', '')}  \nEvidence checked by code: {cited}")
+    else:
+        value, limit = evidence.pop("value", None), evidence.pop("limit", None)
+        extra = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in evidence.items())
+        text = f"**{flag.severity.upper()}: {flag.code}**. Value {value}, limit {limit}"
+        text += f" ({extra})" if extra else ""
     if flag.severity == "critical":
         st.error(text, icon="🛑")
     elif flag.severity == "warning":
@@ -295,6 +309,66 @@ def other_applications(app: Application) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+DOC_LABELS = {"pay_stub": "Pay stub", "bank_statement": "Bank statement"}
+REC_ICONS = {"approve": "🟢", "deny": "🔴", "refer": "🟡"}
+
+
+def show_documents(app: Application):
+    """Documents with a view/download button, hash check, and extracted fields."""
+    from documents import file_path, hash_matches
+
+    docs = sorted(app.documents, key=lambda d: d.id)
+    st.markdown("##### Documents and extracted fields")
+    if not docs:
+        st.caption("No documents on file for this application.")
+        return
+    for doc in docs:
+        label = DOC_LABELS.get(doc.doc_type, doc.doc_type)
+        intact = hash_matches(doc)
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(f"**{label}**: `{doc.original_filename}` · {doc.page_count} page(s) · "
+                        f"{(doc.size_bytes or 0) / 1024:,.0f} KB · uploaded "
+                        f"{doc.uploaded_at:%Y-%m-%d %H:%M} UTC")
+            c1.caption(("✅ File unchanged since upload" if intact else
+                        "🛑 File missing or changed since upload") + f" (SHA-256 {doc.sha256[:16]}…)")
+            if intact:
+                c2.download_button("View / download", file_path(doc).read_bytes(),
+                                   file_name=doc.original_filename or f"{doc.doc_type}",
+                                   mime=doc.mime_type, key=f"doc-{doc.id}")
+            fields = sorted(doc.extracted_fields, key=lambda f: f.id)
+            if not fields:
+                st.caption("Not read: the Document Reader did not run for this document.")
+                continue
+            st.dataframe(pd.DataFrame([{
+                "Field": f.field_name, "Value": f.field_value if f.field_value is not None else "(not found)",
+                "Page": f.source_page, "Needs review": "⚠️ yes" if f.needs_review else "",
+                "Verified by officer": "✅" if f.verified_by_human else "",
+                "Source": "computed by code" if f.extraction_model == "code" else f.extraction_model,
+            } for f in fields]), hide_index=True, width="stretch")
+
+
+def show_recommendation(rec):
+    st.markdown("##### Recommendation")
+    if rec is None:
+        st.info("No recommendation recorded.")
+        return
+    icon = REC_ICONS.get(rec.recommendation, "")
+    confidence = "" if rec.confidence is None else f" · confidence {rec.confidence:.2f}"
+    if rec.passed_validation is None:
+        validation = "not validated (no LLM recommendation)"
+    else:
+        validation = "✅ passed" if rec.passed_validation else "⚠️ failed"
+    st.markdown(f"{icon} **{rec.recommendation.upper()}**{confidence} · validation: {validation}")
+    if rec.explanation:
+        st.markdown(f"> {rec.explanation}")
+        st.caption("Written by the Decision Coordinator (LLM) from tool results only. Every number "
+                   "in it was checked against those results by code.")
+    st.caption(f"Reason codes: {', '.join(rec.reason_codes) or 'none'}")
+    if rec.review_reasons:
+        st.markdown("**Review reasons:** " + "; ".join(rec.review_reasons))
+
+
 def show_application(app: Application):
     """Render calculations, flags, score, contributions, and the recommendation for one application.
     Call inside an open Session so relationships can load."""
@@ -318,6 +392,13 @@ def show_application(app: Application):
         st.markdown(f"##### Other applications by this applicant ({len(others)})")
         st.dataframe(others, hide_index=True, width="stretch")
 
+    if app.status == "stopped_incomplete":
+        st.warning("Stopped at the completeness check: the application is incomplete, so nothing "
+                   "was scored. Ask the applicant for the missing items and submit again.",
+                   icon="⏹️")
+
+    show_documents(app)
+
     st.markdown("##### Calculations")
     calcs = sorted(app.calculations, key=lambda c: c.id)
     for col, calc in zip(st.columns(max(len(calcs), 1)), calcs):
@@ -329,10 +410,10 @@ def show_application(app: Application):
                 st.json(calc.inputs)
                 st.code(calc.code_used or "", language="text")
 
-    st.markdown("##### Rule flags")
-    flags = sorted(app.flags, key=lambda f: SEVERITY_ORDER.get(f.severity, 9))
+    st.markdown("##### Flags (rule checks and pattern review)")
+    flags = sorted(app.flags, key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.source != "rule"))
     if not flags:
-        st.success("No rule flags.", icon="✅")
+        st.success("No flags.", icon="✅")
     for flag in flags:
         show_flag(flag)
 
@@ -360,11 +441,6 @@ def show_application(app: Application):
                 st.plotly_chart(contribution_chart(score.contributions), width="stretch",
                                 key=f"contrib-{app.id}")
 
-    st.markdown("##### Recommendation")
-    if rec is None:
-        st.info("No recommendation recorded.")
-    else:
-        st.write(f"**{rec.recommendation.upper()}**: refer to a loan officer. "
-                 f"Reason codes: {', '.join(rec.reason_codes) or 'none'}")
+    show_recommendation(rec)
     st.info("This is a recommendation awaiting loan officer review. The system does not approve "
             "or deny loans; only an officer's decision on the review page is final.", icon="👤")

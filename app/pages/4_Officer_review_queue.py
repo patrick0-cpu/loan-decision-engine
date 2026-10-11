@@ -7,7 +7,8 @@ from shared import engine, format_probability, latest, show_application
 
 st.set_page_config(page_title="Officer review queue", page_icon="👤", layout="wide")
 
-from db import Application, OfficerReview, log  # noqa: E402
+from db import Application, ExtractedField, OfficerReview, log  # noqa: E402
+from validation import GENERAL_REASONS  # noqa: E402
 
 # Officer choice -> (officer_reviews.decision, new application status)
 DECISIONS = {
@@ -15,8 +16,6 @@ DECISIONS = {
     "Deny": ("denied", "denied"),
     "Request more information": ("request_info", "pending_applicant"),
 }
-GENERAL_REASONS = ["INSUFFICIENT_INCOME", "HIGH_DEBT_BURDEN", "WEAK_CREDIT_HISTORY",
-                   "INCOMPLETE_DOCUMENTATION", "UNVERIFIED_INCOME", "OFFICER_JUDGMENT"]
 
 st.title("Officer review queue")
 
@@ -58,6 +57,44 @@ with Session(engine()) as s:
     rec = latest(app.recommendations)
     reason_options = list(dict.fromkeys(
         [f.code for f in app.flags] + (rec.reason_codes if rec else []) + GENERAL_REASONS))
+    field_options = {
+        f"{d.doc_type} · {f.field_name} = {f.field_value if f.field_value is not None else '(not found)'}"
+        f" (page {f.source_page or '?'})" + ("  ⚠️ needs review" if f.needs_review else "")
+        + ("  ✅ verified" if f.verified_by_human else ""): (f.id, f.field_value)
+        for d in sorted(app.documents, key=lambda d: d.id)
+        for f in sorted(d.extracted_fields, key=lambda f: f.id) if f.extraction_model != "code"}
+
+if field_options:
+    st.divider()
+    st.subheader("Verify extracted fields")
+    st.caption("Check a value against the document (use *View / download* above), then confirm it "
+               "or enter the correct value. This marks the field as verified by a human and is "
+               "written to the audit log. Rule checks and the recommendation are not re-run.")
+    with st.form(f"verify-{selected_id}"):
+        verifier = st.text_input("Your name *", key=f"verifier-{selected_id}")
+        picked = st.selectbox("Field", list(field_options))
+        corrected = st.text_input("Correct value (leave blank to confirm the value as extracted)")
+        verify = st.form_submit_button("Confirm or correct field")
+    if verify:
+        if not verifier.strip():
+            st.error("Enter your name to verify a field.")
+        else:
+            field_id, old_value = field_options[picked]
+            new_value = corrected.strip() or old_value
+            with Session(engine()) as s:
+                f = s.get(ExtractedField, field_id)
+                f.field_value, f.verified_by_human = new_value, True
+                log(s, "field_verification", f"human:{verifier.strip()}",
+                    "corrected extracted field" if new_value != old_value
+                    else "confirmed extracted field", selected_id, field_id=field_id,
+                    document_id=f.document_id, field_name=f.field_name, old_value=old_value,
+                    new_value=new_value)
+                field_name = f.field_name
+                s.commit()
+            st.session_state["review_message"] = (
+                f"Field {field_name} " + ("corrected" if new_value != old_value else "confirmed")
+                + f" by {verifier.strip()}.")
+            st.rerun()
 
 st.divider()
 st.subheader("Officer decision")
