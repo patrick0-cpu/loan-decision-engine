@@ -49,9 +49,9 @@ with Session(engine()) as s:
         "Loan amount": st.column_config.NumberColumn(format="%,.0f")})
     st.caption("Marked cases (at least one critical flag) are listed first.")
 
-    labels = {a.id: f"#{a.id}: {a.applicant.full_name}" + ("  🚩 marked" if is_marked(a) else "")
+    labels = {f"#{a.id}: {a.applicant.full_name}" + ("  🚩 marked" if is_marked(a) else ""): a.id
               for a in queue}
-    selected_id = st.selectbox("Application to review", list(labels), format_func=labels.get)
+    selected_id = labels[st.selectbox("Application to review", list(labels))]
     app = s.get(Application, selected_id)
     st.divider()
     show_application(app)

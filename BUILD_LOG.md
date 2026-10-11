@@ -422,3 +422,31 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   size, then "N other terms combined". The final bar is labelled with the log-odds and the A4
   probability format.
 - Problems: none.
+
+### Part D. Returning applicants
+
+### D1. New or existing applicant on page 3 — ✅ Done
+- Test: AppTest on a database copy. Scored "Test Applicant Low" as a new applicant, then chose
+  *Existing applicant* and searched "applicant low": one match, labelled
+  `#1: Test Applicant Low (created 2026-10-11, 1 earlier application(s))`. The form prefilled
+  income 60,000 and credit score 700. Changed the income to 65,000 and entered a new loan
+  (9,000, HOMEIMPROVEMENT, 10.5%), then submitted. Result: 2 applications, both
+  `applicant_id = 1`, 1 applicant row. The audit log records
+  `created application for existing applicant` with
+  `profile_changes: {"annual_income": [60000.0, 65000.0]}`. Page 4 shows each application's
+  other application with its status and officer decision (`none yet`).
+- Changes: `app/pages/3_Score_an_applicant.py` (applicant choice, search, prefilled form,
+  `score_application(form, applicant_id)`). `app/shared.py` (`other_applications` table in the
+  application view; the stated income now comes from the application's own calculation inputs).
+  `app/pages/4_Officer_review_queue.py` (the selector uses label strings).
+- Decisions: the search is a case-insensitive name match showing up to 50 applicants. The
+  applicant's profile fields (income, education, home ownership, experience, credit score,
+  history, prior default) are prefilled from the latest profile. Loan fields (amount, intent,
+  rate, term) start blank because they belong to the new loan. A returning applicant's row is
+  updated to the values entered (so it holds the latest profile), and every change is written to
+  the audit log as old → new. Each application keeps the values it was scored with in its
+  calculations and audit entries, so the view reads stated income from there instead of the
+  applicant row. Page 4 lists all of the applicant's other applications, marked *earlier* or
+  *later*, since a later application can also matter to the officer.
+- Problems: the AppTest `format_func` issue (see C3) also affected the page 4 selector. Fixed the
+  same way.

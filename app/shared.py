@@ -273,6 +273,28 @@ def format_calc(metric: str, value) -> str:
     return f"{value:,.2f}" if metric == "monthly_payment" else f"{value:.4f} ({value:.1%})"
 
 
+def other_applications(app: Application) -> pd.DataFrame:
+    """The applicant's other applications (earlier ones first) with their outcome."""
+    rows = []
+    for other in sorted(app.applicant.applications, key=lambda a: a.id):
+        if other.id == app.id:
+            continue
+        review = latest(other.officer_reviews)
+        score = latest(other.risk_scores)
+        rows.append({
+            "Application": other.id,
+            "When": "earlier" if other.id < app.id else "later",
+            "Submitted (UTC)": other.created_at.strftime("%Y-%m-%d %H:%M"),
+            "Loan amount": f"{other.loan_amount:,.0f}",
+            "Intent": other.loan_intent,
+            "Default probability": format_probability(score.default_probability) if score else "",
+            "Status": other.status,
+            "Officer decision": (f"{review.decision} by {review.officer_name} "
+                                 f"({review.decided_at:%Y-%m-%d})") if review else "none yet",
+        })
+    return pd.DataFrame(rows)
+
+
 def show_application(app: Application):
     """Render calculations, flags, score, contributions, and the recommendation for one application.
     Call inside an open Session so relationships can load."""
@@ -280,13 +302,21 @@ def show_application(app: Application):
     rec = latest(app.recommendations)
     score = latest(app.risk_scores)
 
-    st.subheader(f"Application #{app.id}: {applicant.full_name}")
+    st.subheader(f"Application #{app.id}: {applicant.full_name} (applicant #{applicant.id})")
     term = f"{app.term_months} months" if app.term_months else "term not given"
+    # Income this application was scored with (the applicant row holds the latest profile).
+    lti = next((c for c in app.calculations if c.metric == "loan_to_income"), None)
+    income = lti.inputs.get("annual_income") if lti else applicant.annual_income
     st.caption(f"Status **{app.status}** · submitted {app.created_at:%Y-%m-%d %H:%M} UTC · "
                f"loan {app.loan_amount:,.0f} for {app.loan_intent} at {app.interest_rate}% "
-               f"({term}) · stated income {applicant.annual_income:,.0f}")
+               f"({term}) · stated income {income:,.0f}")
     if rec and rec.marked_for_additional_review:
         st.error("Marked for additional review: " + ", ".join(rec.review_reasons), icon="🚩")
+
+    others = other_applications(app)
+    if not others.empty:
+        st.markdown(f"##### Other applications by this applicant ({len(others)})")
+        st.dataframe(others, hide_index=True, width="stretch")
 
     st.markdown("##### Calculations")
     calcs = sorted(app.calculations, key=lambda c: c.id)
