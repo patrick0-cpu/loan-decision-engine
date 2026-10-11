@@ -773,3 +773,92 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   and called the Coordinator's recommendation "the model". The number check confirms numbers
   come from tools; it cannot catch a wrong description of them. Not verified by eye in a
   browser: the bubble alignment and the narrow-screen stacking.
+
+### Part G. Documentation
+
+### G1. `README.md` for GitHub — ✅ Done
+- Test: checked by reading it against the code. All 12 sections are present in the order the spec
+  lists, with both Mermaid diagrams in ` ```mermaid ` blocks, the tool tables (Coordinator and
+  assistant), the tool design rules, the 11 tables, the data analysis table, the model variants
+  and metrics, the evaluation tables, the rules with their sources, setup, and limitations. Every
+  figure was copied from this log. The Mermaid diagrams were not rendered here (GitHub renders
+  them on push).
+- Changes: `README.md` rewritten as public documentation.
+- Decisions: both diagrams were updated to match the code. The flowchart gained the two dotted
+  "LLM unavailable" paths (step 1 → step 4 and step 6 → step 9). The sequence diagram shows the
+  extra final-answer call (no tools, JSON schema) after the model stops calling tools. Screenshots
+  are a placeholder table of file names under `docs/`.
+- Problems: none.
+
+### G2. Final build log — ✅ Done (this section)
+
+## Phase 2 summary
+
+| Step | Status | Note |
+|---|---|---|
+| A1 INCOME_MISSING rule | ✅ Done | |
+| A2 Audit log triggers | ✅ Done | |
+| A3 Fairness vs largest group | ✅ Done | |
+| A4 Probability display | ✅ Done | |
+| B1 Four model variants | ✅ Done | Rule chose variant a |
+| B2 Chosen variant as main model | ✅ Done | Retrained once more in C2 (same metrics) |
+| C1 Performance data | ✅ Done | |
+| C2 EBM explanation data | ✅ Done | Density from training rows |
+| C3 Model page layout | ✅ Done | |
+| C4 Applicant waterfall | ✅ Done | |
+| D1 Returning applicants | ✅ Done | |
+| E0 Connection test | ✅ Done | |
+| E1 `llm.py` | ✅ Done | |
+| E2 Document storage | ✅ Done | Real tables upgraded (both had 0 rows) |
+| E3 Sample documents | ✅ Done | |
+| E4 Document Reader | ✅ Done | 100% after cropping fix |
+| E5 Pattern review | ✅ Done | Stopped at 16 of 20 samples at your request |
+| E6 Decision Coordinator | ✅ Done | Tested on one sample |
+| E7 Output validation | ✅ Done | |
+| E8 Review Gatekeeper | ✅ Done | |
+| E9 Dashboard integration | ✅ Done | |
+| E10 Evaluation | ⚠️ Done with issues | One sample per model; `qwen3.5:latest` vs `qwen3.5:35b` |
+| F1 Recommendations in the queue | ✅ Done | |
+| F2 Borrower insights | ✅ Done | |
+| F3 Assistant chat panel | ✅ Done | Bubble layout not checked in a browser |
+| G1 README | ✅ Done | |
+| G2 Final build log | ✅ Done | |
+
+**Decisions made by the written rules**
+
+- **B1 → variant a** (default EBM, 40 terms). Best AUC 0.9413; b 0.9202, c 0.9204 and d 0.8769
+  are all more than 0.01 below it. All four variants pass the fairness condition (lowest ratios
+  0.939 / 0.918 / 0.928 / 0.946). Variant c (no age proxies) is the alternative if you prefer it:
+  it costs 0.021 AUC.
+- **E10 → `LLM_MODEL_ACTIVE=qwen3.5:latest`**. On sample S09, extraction was 10/10 for both
+  models, both caught the planted mismatch, and validation passed 1/1 for `qwen3.5:latest`
+  against 0/1 for `qwen3.5:35b` (an invented reason code). Based on a single sample.
+
+**State at the end:** the real `loans.db` has `historical_loans` with 45,000 rows and 0 rows in
+every other table (all tests used copies). `uploads/` is empty. The dashboard loads
+`models/ebm-20261011T071422Z`.
+
+## Waiting for the user
+
+1. **Confirm the LLM model choice with a larger evaluation.** E10 used one sample per model, so
+   rerun the evaluation on all 20 samples before relying on `qwen3.5:latest`. Your `.env` also
+   has `LLM_MODEL=qwen3.5:35b`, the same as `LLM_MODEL_FINAL`; set it to the development model
+   you intend.
+2. **Credit score minimum: 550 or the stricter 600?** (Still open from phase 1.)
+   `RULES["min_credit_score"]` in `calculations.py`.
+3. **Age proxies:** keep variant a, or switch the main model to variant c (no work experience or
+   credit history length, AUC 0.9204)? Changing it requires editing `train_ebm.FEATURES` and
+   retraining.
+4. **`LLM_BASE_URL`** ends in `/api/generate`. It works (the client strips the path), but
+   `https://gpu-01.insight.gsu.edu:11443` would be cleaner.
+5. **Screenshots:** add the six images listed in the README under `docs/`.
+6. **A look in the browser:** the chat bubble alignment, the narrow-screen layout, and label
+   overlap on the charts were checked by automated tests and PNG exports, not by eye in the
+   running dashboard.
+7. **Field corrections don't re-run the rules or the Coordinator.** If an officer corrects the
+   pay stub's gross pay, `INCOME_MISMATCH` is not recomputed (the page says so). Re-running the
+   workflow after a correction could be a future step.
+8. **Housekeeping (optional):** `models/` holds two older model files
+   (`ebm-20261010T143918Z`, `ebm-20261011T070748Z`) that can be deleted. `kaleido` was
+   pip-installed into `.venv` only to export charts for visual checks; it isn't in
+   `requirements.txt` and can be uninstalled.
