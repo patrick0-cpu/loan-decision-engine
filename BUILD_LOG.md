@@ -313,3 +313,47 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   shows "99.0%". Fairness tables show group averages, not an individual's probability, so they
   stay numeric.
 - Problems: the AppTest harness needed `app/` on `sys.path`, which `streamlit run` adds itself.
+
+### Part B. Model experiment
+
+### B1. Four variants in `models_experiments/` — ✅ Done
+- Test: each variant was trained with `train_ebm.py --target-means default --out models_experiments`
+  and the options shown below, on the same split (`random_state=42`, 17,713 training and 4,429
+  test rows). Fairness ratios use the A3 method (ratio to the largest group).
+
+  | Variant | Options | Model | AUC | Brier | Terms | female | male | <25 | 25-34 | 35-49 | 50+ (n=56, small) | Lowest ratio, n≥100 | AUC within 0.01 of best | No ratio < 0.8 (n≥100) |
+  |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+  | a | defaults | `ebm-20261011T070424Z` | **0.9413** | 0.0937 | 40 | 1.014 | 1.000 | 0.939 | 1.000 | 1.050 | 1.113 | 0.939 | yes | yes |
+  | b | `--interactions 0` | `ebm-20261011T070507Z` | 0.9202 | 0.1109 | 10 | 0.996 | 1.000 | 0.918 | 1.000 | 1.008 | 1.079 | 0.918 | no | yes |
+  | c | b + `--drop person_emp_exp cb_person_cred_hist_length` | `ebm-20261011T070546Z` | 0.9204 | 0.1108 | 8 | 1.000 | 1.000 | 0.928 | 1.000 | 1.021 | 1.022 | 0.928 | no | yes |
+  | d | c + `--drop loan_int_rate` | `ebm-20261011T070625Z` | 0.8769 | 0.1411 | 7 | 1.010 | 1.000 | 0.946 | 1.000 | 1.013 | 1.014 | 0.946 | no | yes |
+
+  Group sizes in the test set: female 1,972, male 2,457, <25 1,514, 25-34 2,353, 35-49 506,
+  50+ 56. (Variant c has 8 terms and d has 7 because they drop 2 and 3 of the 10 features.)
+- **Decision (B1 rule): variant a.** The best AUC is 0.9413 (a), so a variant qualifies on
+  accuracy only with an AUC of at least 0.9313. b (0.9202), c (0.9204) and d (0.8769) all fall
+  short. Every variant passes the fairness condition. Of the variants that meet both conditions,
+  the simplest is the only one, a.
+- Reasoning in numbers: the 30 interaction terms are worth about 0.021 AUC. The largest term in
+  the model is the home ownership × loan-to-income pair (importance 1.50). Dropping the two age
+  proxies costs nothing beyond that (c 0.9204 vs b 0.9202) and raises the lowest age ratio only
+  slightly (0.918 to 0.928). Dropping the interest rate costs another 0.043 AUC. If you prefer a
+  model without the age proxies anyway, variant c is the one to pick: it loses 0.021 AUC compared
+  with a.
+- Changes: none beyond A3 (the options already existed). Outputs in `models_experiments/`.
+- Problems: none. Variant a reproduces the phase 1 model exactly (same AUC and fairness), which
+  confirms the split and seed are deterministic.
+
+### B2. Train the chosen variant as the main model — ✅ Done
+- Test: `python train_ebm.py --target-means default` saved `models/ebm-20261011T070748Z`
+  (AUC 0.9413, accuracy 0.867, Brier 0.0937, 40 terms, no fairness warnings). `RiskScorer`
+  loaded it through `latest_model_path()` (feature-list check passed) and scored the step 3 test
+  applicant: probability 1.0 stored (displayed "above 99%"), baseline 0.7833 log-odds, top
+  drivers home ownership × loan-to-income (+5.50), loan-to-income (+3.07), interest rate (+2.26).
+  Baseline plus all contributions = 15.8353 log-odds, which matches the probability.
+- Changes: none to `FEATURES` or the form, because variant a keeps all ten features.
+- Decisions: the phase 1 model file stays in `models/` (not deleted). The dashboard loads the
+  newest, which is the new one, and the new `.json` holds the A3 fairness format and the C1/C2
+  graph data. Training into `models/` with `--drop` is refused, so the dashboard can never load a
+  model whose features differ from `train_ebm.FEATURES`.
+- Problems: none.
