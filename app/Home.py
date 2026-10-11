@@ -3,9 +3,10 @@ import streamlit as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from shared import engine, no_model_warning, scorer
+from shared import engine, no_model_warning, page_layout, scorer
 
 st.set_page_config(page_title="Loan Decision Support", page_icon="🏦", layout="wide")
+page_layout()
 
 from db import Application  # noqa: E402  (shared puts the project root on sys.path)
 

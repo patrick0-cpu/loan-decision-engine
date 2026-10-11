@@ -4,10 +4,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from shared import (REFERENCE_LINE, SERIES_1, SERIES_2, no_model_warning, pair_heatmap,
-                    scorer, shape_chart, style_bars, term_label)
+from shared import (REFERENCE_LINE, SERIES_1, SERIES_2, no_model_warning, page_layout,
+                    pair_heatmap, scorer, shape_chart, style_bars, term_label)
 
 st.set_page_config(page_title="Model", page_icon="🧠", layout="wide")
+page_layout()
 st.title("Model")
 
 model = scorer()

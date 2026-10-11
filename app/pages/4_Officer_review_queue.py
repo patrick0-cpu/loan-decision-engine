@@ -3,9 +3,11 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared import engine, format_probability, latest, show_application
+from shared import (CONTEXT_KEY, engine, format_probability, latest, page_layout,
+                    show_application)
 
 st.set_page_config(page_title="Officer review queue", page_icon="👤", layout="wide")
+page_layout()
 
 from db import Application, ExtractedField, OfficerReview, log  # noqa: E402
 from validation import GENERAL_REASONS  # noqa: E402
@@ -28,29 +30,63 @@ def is_marked(app: Application) -> bool:
     return bool(rec and rec.marked_for_additional_review)
 
 
+REC_LABELS = {"approve": "🟢 approve", "deny": "🔴 deny", "refer": "🟡 refer"}
+
 with Session(engine()) as s:
     queue = s.scalars(select(Application).where(Application.status == "in_review")).all()
-    queue = sorted(queue, key=lambda a: (not is_marked(a), a.created_at))
+    queue = sorted(queue, key=lambda a: (not is_marked(a), a.created_at))  # marked, then oldest
     if not queue:
         st.info("No applications are waiting for review. Score an applicant to add one.")
         st.stop()
 
     rows = []
     for a in queue:
-        score = latest(a.risk_scores)
+        score, rec = latest(a.risk_scores), latest(a.recommendations)
+        recommendation = rec.recommendation if rec else "refer"
+        if rec is None or rec.passed_validation is None:
+            validation = "not run"
+        else:
+            validation = "✅ passed" if rec.passed_validation else "⚠️ failed"
         rows.append({
             "Application": a.id, "Applicant": a.applicant.full_name,
-            "Marked": "🚩 yes" if is_marked(a) else "",
             "Loan amount": a.loan_amount,
+            "Recommendation": REC_LABELS.get(recommendation, recommendation),
             "Default probability": format_probability(score.default_probability) if score else "",
-            "Flags": len(a.flags), "Submitted (UTC)": a.created_at.strftime("%Y-%m-%d %H:%M")})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
-        "Loan amount": st.column_config.NumberColumn(format="%,.0f")})
-    st.caption("Marked cases (at least one critical flag) are listed first.")
+            "Critical flags": sum(f.severity == "critical" for f in a.flags),
+            "Validation": validation,
+            "Confidence": "" if rec is None or rec.confidence is None else f"{rec.confidence:.2f}",
+            "Marked for review": ("🚩 " + "; ".join(rec.review_reasons)) if is_marked(a) else "",
+            "Submitted (UTC)": a.created_at.strftime("%Y-%m-%d %H:%M"),
+            "_rec": recommendation, "_marked": is_marked(a)})
+    table = pd.DataFrame(rows)
+
+    f1, f2 = st.columns(2)
+    by_label = {label: rec for rec, label in REC_LABELS.items()}
+    rec_filter = [by_label[x] for x in f1.multiselect("Recommendation", list(by_label))]
+    marked_filter = f2.radio("Marked for additional review", ["All", "Marked", "Not marked"],
+                             horizontal=True)
+    shown = table
+    if rec_filter:
+        shown = shown[shown["_rec"].isin(rec_filter)]
+    if marked_filter != "All":
+        shown = shown[shown["_marked"] == (marked_filter == "Marked")]
+    st.dataframe(shown.drop(columns=["_rec", "_marked"]), hide_index=True, width="stretch",
+                 column_config={"Loan amount": st.column_config.NumberColumn(format="%,.0f")})
+    st.caption(f"Showing {len(shown)} of {len(table)} applications waiting for review. Marked "
+               "cases come first, then the oldest. Recommendations are suggestions; only the "
+               "officer's decision below is final. Applications scored before the LLM layer show "
+               "\"refer\" with no confidence.")
+    if shown.empty:
+        st.info("No application matches these filters.")
+        st.stop()
+    queue = [a for a in queue if a.id in set(shown["Application"])]
 
     labels = {f"#{a.id}: {a.applicant.full_name}" + ("  🚩 marked" if is_marked(a) else ""): a.id
               for a in queue}
     selected_id = labels[st.selectbox("Application to review", list(labels))]
+    if st.session_state.get(CONTEXT_KEY) != selected_id:
+        st.session_state[CONTEXT_KEY] = selected_id  # the assistant answers about this one
+        st.rerun()  # the panel already drew this run; redraw it with the new context
     app = s.get(Application, selected_id)
     st.divider()
     show_application(app)

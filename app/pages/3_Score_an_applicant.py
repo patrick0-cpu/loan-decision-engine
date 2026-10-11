@@ -2,9 +2,11 @@ import streamlit as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from shared import engine, historical, llm_status, no_model_warning, scorer, show_application
+from shared import (CONTEXT_KEY, engine, historical, llm_status, no_model_warning, page_layout,
+                    scorer, show_application)
 
 st.set_page_config(page_title="Score an applicant", page_icon="📝", layout="wide")
+page_layout()
 
 from db import Applicant, Application  # noqa: E402
 from documents import MAX_BYTES  # noqa: E402
@@ -155,6 +157,7 @@ if submitted:
                 st.error(f"The workflow failed: {exc}")
 
 app_id = st.session_state.get("scored_app_id")
+st.session_state[CONTEXT_KEY] = app_id  # the assistant answers about the application on screen
 if app_id is not None:
     st.divider()
     with Session(engine()) as s:

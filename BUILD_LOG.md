@@ -690,3 +690,86 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
 - Changes: `.env` (`LLM_MODEL_ACTIVE`). The evaluation script lives in the scratch test folder,
   like the other tests.
 - Problems: none in the code.
+
+### Part F. Dashboard additions
+
+### F1. Recommendations in the officer review queue — ✅ Done
+- Test (AppTest, database copy with three applications in review: S04 from the LLM workflow, S02
+  run without the LLM, and one added the phase 1 way with no score):
+
+  | Applicant | Recommendation | Default probability | Critical flags | Validation | Confidence | Marked for review |
+  |---|---|---|---|---|---|---|
+  | Morgan Tanaka (sample S04) | 🔴 deny | above 99% | 1 | ✅ passed | 0.95 | 🚩 CRITICAL_FLAG:INCOME_MISMATCH |
+  | Jordan Novak (sample S02) | 🟡 refer | 33.9% | 0 | not run | | 🚩 LLM_UNAVAILABLE; EXTRACTION_NEEDS_REVIEW |
+  | Phase One Applicant | 🟡 refer | | 0 | not run | | |
+
+  Filtering by "🔴 deny" left only S04, and "Not marked" left only the phase 1 application.
+  Marked cases come first, then the oldest.
+- Changes: `app/pages/4_Officer_review_queue.py`.
+- Decisions: each recommendation is a coloured dot plus its word (🟢 approve, 🔴 deny,
+  🟡 refer), so colour is never the only cue. Applications without an LLM recommendation show
+  "not run" for validation and a blank confidence. The filters also limit the application
+  selector below the table.
+- Problems: the test reused a widget handle after the page re-rendered (an AppTest artefact);
+  the test now starts a fresh page run instead.
+
+### F2. Borrower insights (page 1, new tab) — ✅ Done
+- Test (AppTest): the tab renders with the cleaned rows (22,142) and with all rows (45,000), with
+  each of the five ordered-group variables selected. Each state draws 14 charts with no
+  exceptions. The sunburst, the credit-score line and the rule-limit chart were exported to PNG
+  and checked by eye. Rule limits on the cleaned rows:
+
+  | Rule limit | Share crossing | Default rate crossing | Everyone else |
+  |---|---|---|---|
+  | Payment-to-income ≥ 0.10 (36-month term) | 18.9% (4,183) | 88.4% | 35.1% |
+  | Loan-to-income ≥ 0.25 | 19.4% (4,296) | 88.2% | 34.8% |
+  | Credit score < 550 | 4.2% (929) | 77.0% | 43.8% |
+
+  With all rows, a fourth bar appears: previous default on file, 50.8% of borrowers, 0.0% default
+  rate. That is the data artifact, visible.
+- Changes: `app/pages/1_Portfolio_overview.py` (Overview and Borrower insights tabs).
+- Decisions: the sunburst's outer ring uses the page's existing outcome colours (blue = repaid,
+  orange = defaulted). The intent ring is neutral grey with text labels, so no colour means two
+  things on the page. Median loan amount and median loan-to-income are two separate bar charts
+  (different scales, no dual axis). Ordered groups: credit score bands of 50 points (the 550 rule
+  limit is a band edge), income deciles, loan-to-income bands of 0.05 up to 0.30, the fairness
+  report's age bands, and employment bands. Groups under 100 loans are grey, labelled "small
+  sample", and left off the line. The protected-attribute note appears above the age line chart
+  and above the gender bar chart. Payment-to-income in the rule chart uses the calculator's
+  formula with a 36-month term.
+- Problems: the small-sample label was clipped at the chart edge, and the share crossing was
+  only in the table. Both fixed.
+
+### F3. Assistant chat panel — ✅ Done
+- Test (AppTest on a database copy, model `qwen3.5:latest`, the E10 choice). All six pages
+  render with the panel. Its caption reads "Model qwen3.5:latest. Answers questions about the
+  data and applications. It can't make or change decisions."
+
+  | Question | Where | Tool calls | Answer (summary) | Number check |
+  |---|---|---|---|---|
+  | "What is the default rate by home ownership?" | page 1, no context | `portfolio_stats` | A table: MORTGAGE 7,827 / 27.39%, OWN 1,156 / 19.20%, RENT 13,089 / 58.03%, OTHER 70 / 55.71%, with "OTHER" noted as a small sample | passed |
+  | "Why is this one marked for review?" | page 4, application #1 (S04) | `get_recommendation` | The critical `INCOME_MISMATCH` (stated $36,575 vs documented $47,803.56, value 0.307, 15% limit), probability 0.9999, both ratio flags; "the final decision rests with you on the review page" | passed |
+  | "Please approve this loan." | page 4, application #1 | `get_recommendation` | "I cannot approve or deny this application — that's your responsibility on the review page", then explained why the case is marked | passed |
+
+  Nine `audit_log` rows were written (LLM calls and tool calls, actor `model`, purpose
+  `assistant`). None contains the question or answer text. Application #1 is still `in_review`.
+- Changes: new `assistant.py` (6 read-only tools, `ask()`, number check). `app/shared.py`
+  (`page_layout()`, `chat_panel()`, bubble CSS). Every page calls `page_layout()`. Pages 3 and 4
+  store the application on screen as the chat context.
+- Decisions: the panel is drawn first in the right column (¼ of the width), so it still appears
+  when a page stops early. The page content goes into the left column with a single
+  `main.__enter__()` call, so existing page code didn't need re-indenting. On narrow screens
+  Streamlit stacks the columns, putting the panel below the content. Bubbles: the user's are
+  right-aligned in a translucent blue, the assistant's left-aligned in translucent grey, readable
+  in light and dark themes. The CSS matches Streamlit 1.65's `stChatMessageAvatarUser` test id
+  (confirmed in the installed frontend bundle). `portfolio_stats` uses a fixed list of 10
+  variables computed by code, never model-written SQL; gender and age results carry the
+  "never used to decide" note. With an application in context, the tools ignore any id the model
+  passes. History is kept in `st.session_state` (last 10 turns sent). The number check is
+  `validation.unsupported_numbers`, and a failed answer is shown with a warning label. If the
+  server is down, the panel shows "Assistant unavailable" and the page works as usual.
+- Problems: none blocking. Two wording slips in answer 2, though every number was correct: it
+  said "exceeding the 15% tolerance limit by 0.307" (0.307 is the gap itself, not the excess)
+  and called the Coordinator's recommendation "the model". The number check confirms numbers
+  come from tools; it cannot catch a wrong description of them. Not verified by eye in a
+  browser: the bubble alignment and the narrow-screen stacking.

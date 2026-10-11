@@ -5,9 +5,10 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared import engine
+from shared import engine, page_layout
 
 st.set_page_config(page_title="Audit log", page_icon="📜", layout="wide")
+page_layout()
 
 from db import AuditLog  # noqa: E402
 

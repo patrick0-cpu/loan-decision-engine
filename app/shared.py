@@ -444,3 +444,85 @@ def show_application(app: Application):
     show_recommendation(rec)
     st.info("This is a recommendation awaiting loan officer review. The system does not approve "
             "or deny loans; only an officer's decision on the review page is final.", icon="👤")
+
+
+# ----------------------------------------------------------------------------- chat panel
+
+CHAT_CSS = """
+<style>
+div[data-testid="stChatMessage"] {
+  border-radius: 14px; padding: 0.45rem 0.7rem; margin-bottom: 0.35rem;
+  background: rgba(137, 135, 129, 0.12);            /* assistant: neutral, both themes */
+  max-width: 92%;
+}
+div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+  flex-direction: row-reverse; margin-left: auto; text-align: right;
+  background: rgba(42, 120, 214, 0.16);             /* user: the dashboard's blue */
+}
+div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) p { text-align: right; }
+</style>
+"""
+CONTEXT_KEY = "chat_app_id"  # pages 3 and 4 store the application on screen here
+
+
+def page_layout():
+    """Split the page into content (left, about three quarters) and the assistant panel (right).
+    The panel renders first, so it still shows when the page calls st.stop() later. On narrow
+    screens Streamlit stacks the columns, which puts the panel below the content."""
+    main, side = st.columns([3, 1], gap="medium")
+    with side:
+        chat_panel()
+    main.__enter__()  # everything the page draws after this call goes into the left column
+    return main
+
+
+def chat_panel():
+    from assistant import ask
+
+    st.markdown(CHAT_CSS, unsafe_allow_html=True)
+    ok, model_name = llm_status()
+    model = scorer()
+    st.markdown("**Assistant**")
+    if not ok or model is None:
+        st.info("Assistant unavailable." + ("" if ok else " The LLM server did not answer."),
+                icon="💬")
+        return
+    st.caption(f"Model {model_name}. Answers questions about the data and applications. "
+               "It can't make or change decisions.")
+    app_id = st.session_state.get(CONTEXT_KEY)
+    if app_id is not None:
+        st.caption(f"Context: application #{app_id}")
+    history = st.session_state.setdefault("chat_history", [])
+    box = st.container(height=460)
+    with box:
+        for turn in history:
+            with st.chat_message(turn["role"]):
+                st.markdown(turn["content"])
+                if turn.get("warning"):
+                    st.warning(turn["warning"], icon="⚠️")
+                if turn.get("tools"):
+                    st.caption("Tools: " + ", ".join(turn["tools"]))
+    question = st.chat_input("Ask about the data or an application", key="chat-input")
+    if st.button("Clear chat", key="chat-clear"):
+        st.session_state["chat_history"] = []
+        st.rerun()
+    if question:
+        with box:
+            with st.chat_message("user"):
+                st.markdown(question)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking…"):
+                    try:
+                        plain = [{"role": t["role"], "content": t["content"]} for t in history]
+                        answer = ask(question, plain, engine=engine(), scorer=model,
+                                     context_app_id=app_id, model=model_name)
+                        text = answer.text
+                        warning = ("Unverified numbers: " + ", ".join(answer.unsupported_numbers)
+                                   + ". They don't match any tool result; check before relying "
+                                   "on them.") if answer.unsupported_numbers else None
+                        tools = [c["tool"] for c in answer.tool_calls]
+                    except Exception as exc:  # the page keeps working without the assistant
+                        text, warning, tools = "Assistant unavailable right now.", str(exc)[:300], []
+        history += [{"role": "user", "content": question},
+                    {"role": "assistant", "content": text, "warning": warning, "tools": tools}]
+        st.rerun()
