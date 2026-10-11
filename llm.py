@@ -106,7 +106,8 @@ def chat(messages: list[dict], *, purpose: str, step: str = "llm",
          schema: Optional[dict] = None, tools: Optional[list[dict]] = None,
          think: bool = False, session: Optional[Session] = None,
          application_id: Optional[int] = None, tool_calls_so_far: int = 0,
-         timeout: Optional[float] = None) -> LLMResponse:
+         timeout: Optional[float] = None, attempt: int = 1,
+         retry_reason: Optional[str] = None) -> LLMResponse:
     """Send one chat request and return the assistant's reply.
 
     images are attached to the last user message (PNG/JPG bytes). schema is a JSON schema the
@@ -135,11 +136,13 @@ def chat(messages: list[dict], *, purpose: str, step: str = "llm",
 
     details: dict[str, Any] = {"model": model, "purpose": purpose, "think": think,
                                "images": len(images or []), "tools_offered": len(tools or []),
-                               "tool_calls_so_far": tool_calls_so_far}
+                               "tool_calls_so_far": tool_calls_so_far, "attempt": attempt}
+    if retry_reason:  # invalid-output retry: the error the model is asked to fix
+        details["retry_reason"] = retry_reason[:500]
     started = time.monotonic()
     error: Optional[str] = None
     body: dict = {}
-    for attempt in (1, 2):
+    for _connection_try in (1, 2):  # one retry on a timeout or connection error
         try:
             r = requests.post(f"{cfg['base_url']}/api/chat", json=payload, headers=_headers(cfg),
                               timeout=timeout or cfg["timeout"])

@@ -10,7 +10,7 @@ Usage: python make_samples.py [--out samples] [--seed 42]
 import argparse
 import json
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fpdf import FPDF
@@ -38,6 +38,11 @@ def money(x: float) -> str:
 
 
 class SamplePDF(FPDF):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # A fixed timestamp keeps the files byte-identical on every run (fpdf stamps "now").
+        self.set_creation_date(datetime(2026, 10, 1, tzinfo=timezone.utc))
+
     def header(self):
         # Diagonal watermark on every page, drawn first so the content prints over it.
         self.set_font("Helvetica", "B", 34)

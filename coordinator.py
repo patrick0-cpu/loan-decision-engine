@@ -1,23 +1,26 @@
 """Decision Coordinator (workflow step 7): a bounded tool-calling loop with thinking on.
 
 It runs after code has finished steps 1 to 6 and saved their results. Its five tools take only
-an application_id, read the stored results (computing and saving a missing one with the same
-function), and never write decisions or change the application's status. So every number the
-model sees comes from code. The orchestrating code checks each tool call before running it.
+an application_id, read the stored results of the current run (computing and saving a missing one
+with the same function), and never write decisions or change the application's status. So every
+number the model sees comes from code. The orchestrating code checks each tool call before
+running it. The final answer must follow a JSON schema whose reason codes are an enum of this
+application's allowed codes; an answer that still fails a fixable check gets one retry.
 """
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import llm
-from calculations import FORMULAS, check_rules as rule_check, run_calculations as calc
+from calculations import FORMULAS, CalcResult, check_rules as rule_check, run_calculations as calc
 from db import Application, AuditLog, Calculation, Flag, RiskScore, log
-from validation import GENERAL_REASONS, RECOMMENDATION_SCHEMA
+from validation import GENERAL_REASONS, RECOMMENDATION_SCHEMA, fixable_failures
 
 MAX_TOOL_CALLS = 8
+MAX_FINAL_ATTEMPTS = 2  # the final answer gets one retry if it fails a check the model can fix
 
 SYSTEM_PROMPT = f"""You are the Decision Coordinator in a loan decision support system. You write a
 recommendation for a human loan officer, who always makes the final decision. You never approve
@@ -75,9 +78,8 @@ def stored_form(session: Session, app: Application) -> dict[str, Any]:
     a = app.applicant
     fallback = {
         "full_name": a.full_name, "person_income": a.annual_income,
-        "person_emp_exp": a.employment_years, "person_education": a.education,
+        "person_education": a.education,
         "person_home_ownership": a.home_ownership, "credit_score": a.credit_score,
-        "cb_person_cred_hist_length": a.credit_history_years,
         "previous_loan_defaults_on_file": "Yes" if a.previous_defaults else "No",
         "loan_amnt": app.loan_amount, "loan_intent": app.loan_intent,
         "loan_int_rate": app.interest_rate, "term_months": app.term_months,
@@ -87,12 +89,13 @@ def stored_form(session: Session, app: Application) -> dict[str, Any]:
 
 
 def documented_income(app: Application) -> Optional[float]:
-    """Annual income computed by code from the pay stub, if extraction produced one."""
+    """Annual income computed by code from the pay stub (the newest value, so a re-run after a
+    correction uses the recomputed figure)."""
     for doc in app.documents:
         if doc.doc_type == "pay_stub":
-            for f in doc.extracted_fields:
-                if f.field_name == "annual_income" and f.field_value not in (None, ""):
-                    return float(f.field_value)
+            f = doc.latest_fields().get("annual_income")
+            if f is not None and f.field_value not in (None, ""):
+                return float(f.field_value)
     return None
 
 
@@ -100,6 +103,22 @@ def _flag_dict(f: Flag) -> dict:
     out = {"code": f.code, "severity": f.severity, "source": f.source}
     out.update({k: v for k, v in (f.evidence or {}).items()})
     return out
+
+
+def allowed_reason_codes(app: Application) -> list[str]:
+    """This application's flag codes, its MODEL_DRIVER:<term> codes and the general reasons."""
+    score = app.current_risk_score
+    terms = list(score.contributions) if score else []
+    return list(dict.fromkeys([f.code for f in app.current_flags]
+                              + [f"MODEL_DRIVER:{t}" for t in terms] + GENERAL_REASONS))
+
+
+def answer_schema(app: Application) -> dict:
+    """RECOMMENDATION_SCHEMA with reason_codes restricted to this application's codes."""
+    schema = json.loads(json.dumps(RECOMMENDATION_SCHEMA))
+    schema["properties"]["reason_codes"]["items"] = {"type": "string",
+                                                     "enum": allowed_reason_codes(app)}
+    return schema
 
 
 # ----------------------------------------------------------------------- the five tools
@@ -120,7 +139,7 @@ def tool_get_application(session: Session, app: Application, scorer=None) -> dic
                      "fields": [{"name": f.field_name, "value": f.field_value,
                                  "page": f.source_page, "needs_review": f.needs_review,
                                  "verified_by_human": f.verified_by_human}
-                                for f in sorted(d.extracted_fields, key=lambda f: f.id)]})
+                                for f in d.latest_fields().values()]})
     return {"application_id": app.id, "applicant_id": app.applicant_id,
             "applicant_name": app.applicant.full_name,
             "form": {k: v for k, v in form.items() if k != "full_name"},
@@ -129,7 +148,7 @@ def tool_get_application(session: Session, app: Application, scorer=None) -> dic
 
 
 def tool_run_calculations(session: Session, app: Application, scorer=None) -> dict:
-    rows = sorted(app.calculations, key=lambda c: c.id)
+    rows = app.current_calculations
     if not rows:  # missing: compute with the same function, save, then return what was saved
         for c in calc(stored_form(session, app)):
             session.add(Calculation(application_id=app.id, metric=c.metric, value=c.value,
@@ -137,7 +156,7 @@ def tool_run_calculations(session: Session, app: Application, scorer=None) -> di
                                     assumptions=c.assumptions))
         session.flush()
         session.refresh(app)
-        rows = sorted(app.calculations, key=lambda c: c.id)
+        rows = app.current_calculations
         log(session, "calculations", "code", "computed missing calculations for a tool call",
             app.id)
     return {"results": [{"metric": c.metric, "value": c.value, "inputs": c.inputs,
@@ -145,33 +164,29 @@ def tool_run_calculations(session: Session, app: Application, scorer=None) -> di
 
 
 def tool_check_rules(session: Session, app: Application, scorer=None) -> dict:
-    flags = [f for f in app.flags if f.source == "rule"]
-    ran = session.scalars(select(AuditLog).where(AuditLog.application_id == app.id,
-                                                 AuditLog.step == "rule_check")).first()
-    if ran is None:  # rules never ran for this application: run and save them now
+    ran = any(a.step == "rule_check" for a in app.run_audit())
+    if not ran:  # rules never ran in this run: run and save them now
         tool_run_calculations(session, app)
-        form = stored_form(session, app)
-        from calculations import CalcResult
-        calcs = [CalcResult(c.metric, c.value, c.inputs, c.assumptions) for c in app.calculations]
-        for f in rule_check(form, calcs, documented_income=documented_income(app)):
+        calcs = [CalcResult(c.metric, c.value, c.inputs, c.assumptions)
+                 for c in app.current_calculations]
+        for f in rule_check(stored_form(session, app), calcs,
+                            documented_income=documented_income(app)):
             session.add(Flag(application_id=app.id, code=f.code, source="rule",
                              severity=f.severity, evidence=f.evidence))
         log(session, "rule_check", "code", "checked rules for a tool call", app.id)
         session.flush()
         session.refresh(app)
-        flags = [f for f in app.flags if f.source == "rule"]
     return {"documented_income": documented_income(app),
-            "flags": [_flag_dict(f) for f in sorted(flags, key=lambda f: f.id)]}
+            "flags": [_flag_dict(f) for f in app.current_flags if f.source == "rule"]}
 
 
 def tool_get_pattern_findings(session: Session, app: Application, scorer=None) -> dict:
-    flags = sorted((f for f in app.flags if f.source == "pattern"), key=lambda f: f.id)
-    return {"findings": [_flag_dict(f) for f in flags],
+    return {"findings": [_flag_dict(f) for f in app.current_flags if f.source == "pattern"],
             "note": "Only findings whose cited evidence was verified by code are listed."}
 
 
 def tool_score_risk(session: Session, app: Application, scorer=None) -> dict:
-    score = max(app.risk_scores, key=lambda r: r.id) if app.risk_scores else None
+    score = app.current_risk_score
     if score is None:
         if scorer is None:
             return {"error": "no stored risk score and no model available"}
@@ -190,6 +205,11 @@ def tool_score_risk(session: Session, app: Application, scorer=None) -> dict:
     baseline = None
     if scorer is not None and scorer.model_version == score.model_version:
         baseline = scorer.baseline_log_odds
+    elif scorer is not None:  # scored by an older model: read the baseline from its own file
+        old = scorer.model_path.parent / f"{score.model_version}.pkl"
+        if old.exists():
+            from risk_scorer import RiskScorer
+            baseline = RiskScorer(old, check_features=False).baseline_log_odds
     return {
         "model_version": score.model_version,
         "default_probability": score.default_probability,
@@ -220,6 +240,9 @@ class CoordinatorResult:
     tool_calls_used: int = 0
     limit_reached: bool = False
     error: Optional[str] = None
+    failures: Optional[list[str]] = None  # step 8 result for the last attempt
+    final_attempts: int = 0
+    retry_reason: Optional[str] = None
 
 
 def run_tool(session: Session, app: Application, call: dict, scorer, purpose: str,
@@ -243,8 +266,14 @@ def run_tool(session: Session, app: Application, call: dict, scorer, purpose: st
     return str(name), result
 
 
-def coordinate(session: Session, app: Application, scorer=None,
-               model: Optional[str] = None) -> CoordinatorResult:
+Validator = Callable[[Any, list[dict]], list[str]]
+
+
+def coordinate(session: Session, app: Application, scorer=None, model: Optional[str] = None,
+               validator: Optional[Validator] = None) -> CoordinatorResult:
+    """Run the tool loop, then ask for the final answer. validator(answer, tool_results) is the
+    step 8 check; if it reports failures the model can fix (schema, reason code), the final
+    answer is requested once more with those failures quoted."""
     out = CoordinatorResult()
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Recommend for application {app.id}."}]
@@ -271,18 +300,32 @@ def coordinate(session: Session, app: Application, scorer=None,
                     limit=MAX_TOOL_CALLS)
                 break
 
+        schema = answer_schema(app)
         messages.append({"role": "user", "content": (
             "Give your final answer now as a JSON object with recommendation, reason_codes, "
             "explanation and confidence. Use only numbers from the tool results.")})
-        final = llm.chat(messages, purpose="decision coordinator: final answer",
-                         step="coordinator", model=model, schema=RECOMMENDATION_SCHEMA,
-                         think=True, session=session, application_id=app.id,
-                         tool_calls_so_far=out.tool_calls_used)
-        out.raw_answer = final.content
-        try:
-            out.answer = json.loads(final.content)
-        except ValueError:
-            out.answer = None
+        for attempt in range(1, MAX_FINAL_ATTEMPTS + 1):
+            final = llm.chat(messages, purpose="decision coordinator: final answer",
+                             step="coordinator", model=model, schema=schema, think=True,
+                             session=session, application_id=app.id,
+                             tool_calls_so_far=out.tool_calls_used, attempt=attempt,
+                             retry_reason=out.retry_reason if attempt > 1 else None)
+            out.final_attempts = attempt
+            out.raw_answer = final.content
+            try:
+                out.answer = json.loads(final.content)
+            except ValueError:
+                out.answer = None
+            out.failures = validator(out.answer, out.tool_results) if validator else []
+            fixable = fixable_failures(out.failures)
+            if not fixable or attempt == MAX_FINAL_ATTEMPTS:
+                break
+            out.retry_reason = "; ".join(fixable)
+            messages += [{"role": "assistant", "content": final.content},
+                         {"role": "user", "content": (
+                             "Your answer failed these checks: " + out.retry_reason
+                             + ". Give the corrected final answer as JSON. Use only reason codes "
+                               "from the allowed list and only numbers from the tool results.")}]
     except llm.LLMError as exc:
         out.error = str(exc)
     return out

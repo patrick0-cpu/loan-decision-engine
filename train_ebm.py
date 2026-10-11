@@ -4,9 +4,11 @@ Usage:
   python train_ebm.py --check                    inspect what loan_status means (run this first)
   python train_ebm.py --target-means default     train, treating loan_status = 1 as default
 
+The main model is variant c (CLAUDE3.md): eight features and no interaction terms.
+
 Experiments (never into models/, which the dashboard loads):
-  python train_ebm.py --target-means default --out models_experiments --interactions 0 \\
-      --drop person_emp_exp cb_person_cred_hist_length
+  python train_ebm.py --target-means default --out models_experiments --interactions 10 \\
+      --drop loan_int_rate
 """
 import argparse
 import json
@@ -23,10 +25,12 @@ from sqlalchemy import text
 from db import get_engine, load_historical
 
 PROTECTED = ["person_gender", "person_age"]
-FEATURES = ["person_education", "person_income", "person_emp_exp", "person_home_ownership",
-            "loan_amnt", "loan_intent", "loan_int_rate", "loan_percent_income",
-            "cb_person_cred_hist_length", "credit_score"]
+FEATURES = ["person_education", "person_income", "person_home_ownership", "loan_amnt",
+            "loan_intent", "loan_int_rate", "loan_percent_income", "credit_score"]
 # previous_loan_defaults_on_file is deliberately excluded: see "Dataset analysis results".
+# person_emp_exp and cb_person_cred_hist_length were dropped in phase 2b (variant c): they track
+# age closely (correlations +0.96 and +0.86) and added nothing once interactions were removed.
+DEFAULT_INTERACTIONS = 0  # variant c: one term per feature
 TARGET = "loan_status"
 POSSIBLE_AGE_PROXIES = ["person_emp_exp", "cb_person_cred_hist_length"]
 
@@ -278,7 +282,8 @@ def explanation_data(ebm, train_df: pd.DataFrame) -> dict:
     return terms
 
 
-def fit(train_df: pd.DataFrame, y_train: pd.Series, features: list[str], interactions=None):
+def fit(train_df: pd.DataFrame, y_train: pd.Series, features: list[str],
+        interactions=DEFAULT_INTERACTIONS):
     from interpret.glassbox import ExplainableBoostingClassifier
 
     kwargs = {} if interactions is None else {"interactions": interactions}
@@ -287,7 +292,7 @@ def fit(train_df: pd.DataFrame, y_train: pd.Series, features: list[str], interac
     return ebm
 
 
-def train(df: pd.DataFrame, target_means: str, out_dir: Path, interactions=None,
+def train(df: pd.DataFrame, target_means: str, out_dir: Path, interactions=DEFAULT_INTERACTIONS,
           drop: tuple[str, ...] = ()) -> dict:
     from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 
@@ -358,8 +363,9 @@ def main():
     p.add_argument("--target-means", choices=["default", "repaid"],
                    help="what loan_status = 1 means; required to train")
     p.add_argument("--out", default="models", help="output folder (default: models)")
-    p.add_argument("--interactions", type=int, default=None,
-                   help="number of pairwise interaction terms (default: the EBM's own default)")
+    p.add_argument("--interactions", type=int, default=DEFAULT_INTERACTIONS,
+                   help=f"number of pairwise interaction terms (default: {DEFAULT_INTERACTIONS}, "
+                        "the main model's setting)")
     p.add_argument("--drop", nargs="+", default=[], choices=FEATURES, metavar="FEATURE",
                    help="features to leave out (experiments only)")
     args = p.parse_args()

@@ -61,8 +61,8 @@ def historical(clean: bool) -> pd.DataFrame:
 
 
 @st.cache_resource(show_spinner="Loading the risk model...")
-def _load_scorer(path: str) -> RiskScorer:
-    return RiskScorer(path)
+def _load_scorer(path: str, check_features: bool = True) -> RiskScorer:
+    return RiskScorer(path, check_features=check_features)
 
 
 def scorer() -> RiskScorer | None:
@@ -81,7 +81,8 @@ def baseline_log_odds(model_version: str) -> float | None:
     path = latest_model_path().parent / f"{model_version}.pkl"
     if not path.exists():
         return None
-    return _load_scorer(str(path)).baseline_log_odds
+    # Older models (other feature lists) are loaded only to read their baseline.
+    return _load_scorer(str(path), check_features=False).baseline_log_odds
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -294,7 +295,7 @@ def other_applications(app: Application) -> pd.DataFrame:
         if other.id == app.id:
             continue
         review = latest(other.officer_reviews)
-        score = latest(other.risk_scores)
+        score = other.current_risk_score
         rows.append({
             "Application": other.id,
             "When": "earlier" if other.id < app.id else "later",
@@ -336,7 +337,7 @@ def show_documents(app: Application):
                 c2.download_button("View / download", file_path(doc).read_bytes(),
                                    file_name=doc.original_filename or f"{doc.doc_type}",
                                    mime=doc.mime_type, key=f"doc-{doc.id}")
-            fields = sorted(doc.extracted_fields, key=lambda f: f.id)
+            fields = list(doc.latest_fields().values())  # newest value per field
             if not fields:
                 st.caption("Not read: the Document Reader did not run for this document.")
                 continue
@@ -373,13 +374,13 @@ def show_application(app: Application):
     """Render calculations, flags, score, contributions, and the recommendation for one application.
     Call inside an open Session so relationships can load."""
     applicant = app.applicant
-    rec = latest(app.recommendations)
-    score = latest(app.risk_scores)
+    rec = app.current_recommendation  # the current run (a re-run adds new rows)
+    score = app.current_risk_score
 
     st.subheader(f"Application #{app.id}: {applicant.full_name} (applicant #{applicant.id})")
     term = f"{app.term_months} months" if app.term_months else "term not given"
     # Income this application was scored with (the applicant row holds the latest profile).
-    lti = next((c for c in app.calculations if c.metric == "loan_to_income"), None)
+    lti = next((c for c in app.current_calculations if c.metric == "loan_to_income"), None)
     income = lti.inputs.get("annual_income") if lti else applicant.annual_income
     st.caption(f"Status **{app.status}** · submitted {app.created_at:%Y-%m-%d %H:%M} UTC · "
                f"loan {app.loan_amount:,.0f} for {app.loan_intent} at {app.interest_rate}% "
@@ -392,6 +393,21 @@ def show_application(app: Application):
         st.markdown(f"##### Other applications by this applicant ({len(others)})")
         st.dataframe(others, hide_index=True, width="stretch")
 
+    start = app.run_start()
+    if start is not None:
+        done = [a for a in app.run_audit() if a.action == "re-run checks finished"]
+        changes = done[-1].details if done else {}
+        summary = "; ".join(filter(None, [
+            ("flags removed: " + ", ".join(changes["flags_removed"]))
+            if changes.get("flags_removed") else "",
+            ("flags added: " + ", ".join(changes["flags_added"]))
+            if changes.get("flags_added") else "",
+            (f"recommendation {changes['recommendation_from']} → {changes['recommendation_to']}")
+            if changes and changes.get("recommendation_from") != changes.get("recommendation_to")
+            else ""]))
+        st.info(f"Results recalculated after a correction by **{start.details.get('officer')}** "
+                f"on {start.created_at:%Y-%m-%d %H:%M} UTC. Earlier results stay in the database "
+                "and the audit log." + (f" Changes: {summary}." if summary else ""), icon="🔁")
     if app.status == "stopped_incomplete":
         st.warning("Stopped at the completeness check: the application is incomplete, so nothing "
                    "was scored. Ask the applicant for the missing items and submit again.",
@@ -400,7 +416,7 @@ def show_application(app: Application):
     show_documents(app)
 
     st.markdown("##### Calculations")
-    calcs = sorted(app.calculations, key=lambda c: c.id)
+    calcs = app.current_calculations
     for col, calc in zip(st.columns(max(len(calcs), 1)), calcs):
         with col:
             st.metric(CALC_LABELS.get(calc.metric, calc.metric), format_calc(calc.metric, calc.value))
@@ -411,7 +427,8 @@ def show_application(app: Application):
                 st.code(calc.code_used or "", language="text")
 
     st.markdown("##### Flags (rule checks and pattern review)")
-    flags = sorted(app.flags, key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.source != "rule"))
+    flags = sorted(app.current_flags,
+                   key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.source != "rule"))
     if not flags:
         st.success("No flags.", icon="✅")
     for flag in flags:

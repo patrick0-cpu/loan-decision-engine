@@ -862,3 +862,239 @@ every other table (all tests used copies). `uploads/` is empty. The dashboard lo
    (`ebm-20261010T143918Z`, `ebm-20261011T070748Z`) that can be deleted. `kaleido` was
    pip-installed into `.venv` only to export charts for visual checks; it isn't in
    `requirements.txt` and can be uninstalled.
+
+## Phase 2b (from `CLAUDE3.md`)
+
+Started 2026-10-11. Your decisions: model variant c, credit score minimum stays 550, Milestone 1
+measurable outcome left blank. `CLAUDE3.md` was added to `.gitignore`, like `CLAUDE.md` and
+`CLAUDE2.md`. Before any change, the real `loans.db` had 45,000 `historical_loans` rows and no
+other rows. Tests use database copies, as before.
+
+### 1. Switch the main model to variant c — ✅ Done
+- Test: `python train_ebm.py --target-means default` (the plain command) trained
+  `models/ebm-20261011T230951Z`: 8 features, 0 interactions, 8 terms, **AUC 0.9204, Brier 0.1108**
+  (matches the B1 row for variant c), accuracy at 0.5 84.3%. The scorer loads it (feature check
+  passes). The step 3 test applicant scores 0.9996, with top drivers loan-to-income +3.04,
+  interest rate +2.28 and credit score +1.11, and baseline + contributions gives back the
+  probability. Fairness: female 1.000, male 1.000, <25 0.928, 25-34 1.000, 35-49 1.021,
+  50+ 1.022 (small sample); no warnings. Model page: 8 shape functions, all render, no
+  Interactions section. Page 3 no longer has the two inputs. Older stored scores: the waterfall
+  and the Coordinator's `score_risk` read the baseline from the old model's file (0.7833 for
+  `ebm-20261011T071422Z`), and that model is refused for new scoring. `explain_feature` works for
+  the 8 features and returns an error for `person_emp_exp`.
+- Changes: `train_ebm.py` (`FEATURES` = 8, `DEFAULT_INTERACTIONS = 0` used by `fit`, `train` and
+  the `--interactions` default). `risk_scorer.py` (`check_features=False` loads an older model
+  only to read its baseline; scoring uses the model's own feature list). `app/shared.py`,
+  `coordinator.py` (baselines from old model files), `workflow.py` (the two features are no longer
+  required). `app/pages/3_Score_an_applicant.py` (inputs removed, caption explains why).
+  `pattern_review.py` and `coordinator.stored_form` no longer pass them.
+- Decisions: `applicants.employment_years` and `credit_history_years` are nullable, so **the two
+  inputs were removed from the form** rather than kept as optional fields. New applicants store
+  NULL there, and a returning applicant's earlier values are left as they are. All earlier model
+  files stay in `models/`.
+- README sections changed: Features (Model page bullet), The model (features, variant table with
+  c chosen and why, metrics, calibration, fairness, age-proxy note), Setup (training command
+  description), Limitations (age proxies).
+- Problems: the first patch failed on its first check (a shell-quoting problem) after the
+  training command had already been chained, so one extra variant-a model was trained. I deleted
+  that file (`ebm-20261011T230834Z`), since nothing referenced it, and re-ran with the patch
+  written as a file.
+
+### 2. Interrupted runs — ✅ Done
+- Behaviour before the change (database copy, a real process kill inside the risk score step,
+  LLM steps skipped because the server was unreachable, see below): the application was left
+  with `status = submitted` and `current_step = rule_check`. That was the last step saved, not
+  where it stopped. 2 documents were on disk in `uploads/1/`, plus 3 calculations, 2 flags and
+  5 audit rows (intake, completeness, LLM skipped, calculations, rule check), with no score and
+  no recommendation. Nothing listed it: the queue shows only `in_review`, so the run was
+  invisible and could not be recovered.
+- Test after the change: two runs (S04, S02) were killed inside the risk score step, and both
+  now show `current_step = risk_scoring`. Both appeared on page 4 under "Interrupted runs (2)"
+  (`INTERRUPTED_AFTER_MINUTES=0` for the test). **Resume** on #1 by "Officer Resume" ran only
+  the risk score and the gatekeeper, and the run ended `in_review` with 3 calculations, 2 flags,
+  1 score and 1 recommendation. **Mark as stopped** on #2 by "Officer Stop" set
+  `stopped_incomplete`, `current_step = interrupted`, and an audit row with
+  `reason: INTERRUPTED`. In the audit log, no step appears twice in either application. Afterwards
+  the Interrupted section is empty.
+- Changes: `workflow.py` rewritten around `continue_application()`, which checks each step
+  against the current run and runs only the missing ones, plus `start_application`, `resume`,
+  `mark_stopped`, `interrupted_runs` and `interrupted_after`. `current_step` is committed as each
+  step starts, and the Document Reader commits per document. `db.py`: run helpers on
+  `Application` (`run_start`, `run_audit`, `current_calculations`, `current_flags`,
+  `current_risk_score`, `current_recommendation`) and `Document.latest_fields()`.
+  `coordinator.py` tools read the current run. `app/pages/4_Officer_review_queue.py`: Interrupted
+  runs section. `app/shared.py`: the view reads the current run.
+- Decisions: "hasn't changed for 15 minutes" is measured from the application's newest audit row
+  (every step writes one), so no schema change was needed. The threshold can be changed with
+  `INTERRUPTED_AFTER_MINUTES`. A step's results and audit rows are written in one transaction, so
+  a step cut off mid-way leaves nothing and runs again in full; "no step ran twice" therefore
+  holds for completed steps, which is what the audit log shows. LLM availability is checked once
+  per run and recorded (`LLM steps skipped`), so a resumed run stays consistent with how it
+  started.
+- README sections changed: Features (Interrupted runs), Workflow (recovery table), new section
+  "Run state and recovery".
+- **Problem, blocking: the school server is unreachable.** From this point the LLM host
+  `gpu-01.insight.gsu.edu` does not resolve (`NameResolutionError`; Comcast DNS answers
+  "Non-existent domain"), while the internet and GitHub work. The machine is off the campus
+  network or VPN. This is CLAUDE2.md stop condition 1. Following the working mode, every step
+  that doesn't need the server continues; the ones that do are listed as they come up.
+
+### 3. One retry on invalid model output — ✅ Done
+- Test (mocked server responses at the HTTP layer, so the real `llm.chat` runs and writes audit
+  rows; database copy):
+
+  | Case | Calls | Result | Audit |
+  |---|---|---|---|
+  | Document Reader, fails once then passes | 2 | clean, annual income 47,803.56 | attempt 1; attempt 2 with `retry_reason` listing the three problems (pay period "every month", gross pay "about four thousand", date "30/09/2026") |
+  | Document Reader, fails twice | 2 | `needs_review`, no income | attempts 1 and 2 |
+  | Coordinator final answer, fails once then passes | 1 loop + 2 final | validation passed | retry reason `REASON_CODE: … FLAG:INCOME_MISMATCH` |
+  | Coordinator final answer, fails twice | 1 loop + 2 final | `REASON_CODE` failure kept, so the case is marked `VALIDATION_FAILED` | |
+
+- Changes: `document_reader.py` (`MAX_ATTEMPTS = 2`, `FIXABLE`, `fixable_problems`; the retry
+  quotes the problems back to the model). `coordinator.py` (`coordinate(..., validator)` retries
+  the final answer once on a fixable failure; `MAX_FINAL_ATTEMPTS = 2`). `validation.py`
+  (`fixable_failures`: `SCHEMA` and `REASON_CODE`). `llm.py` (`attempt` and `retry_reason`
+  recorded in every audit row; the connection-retry loop variable was renamed so it no longer
+  shadows them). `workflow.py` saves `final_attempts` and `retry_reason`.
+- Decisions: fixable problems are format and shape (invalid JSON, a missing field, a wrong type,
+  a pay period outside the list, a non-ISO date, a page out of range). A null "not found" value,
+  an implausible date or an amount ≤ 0 describes the document itself, so it goes straight to
+  `needs_review` without a retry. For the Coordinator, only schema and reason-code failures are
+  retried; number and consistency failures go to the officer as they are. Connection retries stay
+  inside `llm.chat`, 1 per call.
+- README sections changed: Workflow table (steps 2, 7, 8), tool design rules (retry limits).
+- Problems: none.
+
+### 4. Reason codes as an enum — ⚠️ Done with issues (server enforcement not tested)
+- Implemented: `coordinator.answer_schema(app)` builds the final-answer schema per application,
+  with `reason_codes.items.enum` = this application's current flag codes + `MODEL_DRIVER:<term>`
+  for each term in its current score + `GENERAL_REASONS`. Shown in the Step 3 test: for the test
+  application the enum held `PAYMENT_TO_INCOME_HIGH, LOAN_TO_INCOME_HIGH`, the 8 model-driver
+  codes and the 8 general reasons. The step 8 check stays as a second safeguard.
+- **Not tested: whether the server enforces the enum.** That needs the school server, which is
+  unreachable (stop condition 1). The Step 3 retry covers a server that ignores the enum.
+  Pending: one call with this schema, asking for an off-list code, then check the reply.
+- Changes: `coordinator.py` (`allowed_reason_codes`, `answer_schema`).
+- README sections changed: Workflow table (steps 7 and 8), tool design rules ("Reason codes are
+  an enum").
+
+### 5. Re-run checks after a correction — ✅ Done
+- Test (AppTest on page 4, database copy holding the S04 workflow run from E6, which has a
+  planted mismatch: stated income 36,575 vs pay stub 47,803.56). "Officer Fix" corrected
+  `gross_pay` from 3983.63 to 3047.92 (= 36,575 ÷ 12) and the **Re-run checks** button appeared.
+  The re-run added a new `annual_income` row (36,575.04; the old 47,803.56 row stays), new
+  calculations, flags, a score and a recommendation. Current flags went from
+  `PAYMENT_TO_INCOME_HIGH, LOAN_TO_INCOME_HIGH, INCOME_MISMATCH, DEPOSITS_BELOW_PAY_STUB_INCOME`
+  to `PAYMENT_TO_INCOME_HIGH, LOAN_TO_INCOME_HIGH`. **The old `INCOME_MISMATCH` row (id 3) is
+  still in `flags`.** The view says "Results recalculated after a correction by Officer Fix … flags
+  removed: DEPOSITS_BELOW_PAY_STUB_INCOME, INCOME_MISMATCH; recommendation deny → refer", and the
+  audit log has `re-run checks started` (human:Officer Fix) and `re-run checks finished` with the
+  same changes.
+- Changes: `workflow.rerun_checks()` writes the run boundary (with the previous flags and
+  recommendation), sets the status to `submitted`, and calls `continue_application()`, which on a
+  re-run skips the Document Reader and recomputes annual income (`_revalidate`). The view, the
+  tools and the queue read only the current run (Step 2 helpers). `app/pages/4_Officer_review_queue.py`
+  shows the Re-run checks form once a field has been verified.
+- Decisions: a re-run is a new "run" marked by an audit row; every table keeps its old rows, and
+  "current" means created after the latest boundary. While a re-run is in progress the status is
+  `submitted`, so an interrupted re-run shows under Interrupted runs and can be resumed. Fields
+  the officer verified count as reviewed for the gatekeeper. Re-run requires the status
+  `in_review`.
+- Caveat: with the server unreachable, the re-run skipped pattern review and the Coordinator, so
+  the new recommendation is `refer` with `LLM_UNAVAILABLE`. The `DEPOSITS_BELOW_PAY_STUB_INCOME`
+  pattern flag disappeared because pattern review didn't run, not because the correction cleared
+  it. With the server, both LLM steps run again on the corrected values.
+- README sections changed: Features (officer review queue, Re-run checks), Workflow table
+  (step 10).
+
+### 6. Evaluation script in the repository — ⚠️ Done with issues (two LLM cases not run)
+- Test: `python eval/run_cases.py` (database copy and temporary uploads, both removed afterwards)
+  wrote `eval/results/2026-10-11/cases.md` and `cases.json`:
+
+  | Case | Requirement | Result |
+  |---|---|---|
+  | Clean sample (S06), then a scripted officer approval | 1. Representative successful case | **not run**: LLM server unreachable |
+  | Planted mismatch (S01) | 2. Different input condition / branch | **not run**: LLM server unreachable |
+  | Text file renamed to `.pdf` | 3. Invalid or failing case | pass: `stopped_incomplete`, "Only PDF, PNG and JPG files are accepted." |
+  | Missing bank statement | Extra: failing case | pass: `stopped_incomplete`, missing `document: bank_statement` |
+  | LLM turned off | Extra: fallback path | pass: `in_review`, `refer`, probability 0.6342, `LLM_UNAVAILABLE, EXTRACTION_NEEDS_REVIEW` |
+  | Interrupted then resumed | Extra: recovery path | pass: stopped at `risk_scoring`, resumed to `in_review`, no step run twice |
+
+  Each case records input, expected, actual, evidence (application id, status, flags,
+  recommendation, validation, review reasons, audit rows), seconds per step, and a draft
+  interpretation with a next action. The Milestone 1 outcome was left blank, so the report
+  includes the default measures: seconds per application (0.02 without the LLM), extraction
+  accuracy and planted mismatches caught (both "not run").
+  The real `loans.db` still has 0 applications after the run, and `uploads/` is empty.
+- Changes: new `eval/run_cases.py` (cases, `--compare MODEL_A,MODEL_B --samples all|ids`, the E10
+  rule in `decide()`, Markdown/JSON writers) and `eval/README.md`. `make_samples.py` now fixes
+  the PDF creation date: two runs gave 41 of 41 files byte-identical, where before fpdf's "now"
+  timestamp changed every PDF. `samples/` was regenerated, and the answer key's SHA-256 is
+  unchanged (`b12c6c48…`), so the values are identical.
+- Decisions: case 1 uses the clean sample with no rule flags and the lowest default probability
+  (S06), so approve or refer is a fair expectation. The interruption in case 6 is an exception
+  raised inside the risk score step; Step 2 recorded a real process kill. Results contain only
+  fictional sample data, so `eval/results/` is committed. When the server is unreachable, the LLM
+  cases are written as "not run" instead of failing the whole script.
+- README sections changed: new "Evaluation" section (test case table with the three required
+  cases first, Document Reader accuracy, the provisional model comparison, and the "Test data"
+  subsection read from `make_samples.py`). It replaces the old "LLM evaluation" section.
+- Note on the real `loans.db`: it holds exactly one `audit_log` row (id 1, an `assistant` LLM call
+  from 2026-10-11 08:04:58 UTC with no application). It was written while the live dashboard was
+  running for you before this phase, when a question was asked in the chat panel, so it is real
+  use and not a test row (and it can't be deleted: the log is append-only).
+- Pending (needs the server): cases 1 and 2.
+
+### 7. Compare the two models on all 20 samples — ❌ Blocked (stop condition 1)
+- Not run: the school server was still unreachable (rechecked, `llm.available()` false). The
+  command is ready: `python eval/run_cases.py --compare qwen3.5:latest,qwen3.5:35b --samples all`.
+  It reports per model: extraction field accuracy, valid JSON rate, planted mismatches caught
+  (out of 5), false mismatch flags (out of 15), pattern-review findings on planted and clean
+  samples, validation pass rate, retries used and average seconds, and it applies the E10 rule.
+- `LLM_MODEL_ACTIVE` stays `qwen3.5:latest` (the one-sample E10 choice) until this runs.
+- README: the "Model comparison" subsection is labelled provisional and still shows the
+  one-sample table.
+
+### 8. Diagrams — ✅ Done
+- Test: every ```mermaid block in `README.md` was parsed and rendered with Mermaid 10.9.1 in
+  headless Chrome (`mermaid.parse` and `mermaid.render`): workflow OK, sequence OK, components
+  OK. The checker was confirmed on a deliberately broken diagram, which it reported as a parse
+  error. The workflow and component diagrams were also screenshotted and read by eye: labels are
+  legible and the layout is tall but clear. Every function named in the branch table exists in
+  the code.
+- Changes (README only): the workflow diagram now shows the trigger, each step's actor (code,
+  LLM, ML, human) and function, the exact condition on every branch, the validation-failure path,
+  the retries and their limits (document reader 1, connection 1, final answer 1, 8 tool calls),
+  interrupted runs with Resume and Mark as stopped, Re-run checks, completion, and the hand-off to
+  the officer. The sequence diagram adds the invalid-output retry (an `alt` block) and the enum
+  schema. The new component diagram covers the dashboard pages, workflow modules, LLM client,
+  school server, model files, SQLite tables, file storage and `eval/`, with simulated parts
+  (Kaggle data, generated samples) dashed orange, planned parts (credit bureau, real scans) dotted
+  grey, and a legend. Under the workflow diagram: "How the workflow is controlled" and a 17-row
+  branch-conditions table.
+- Decisions: no Node.js was installed (stop condition 5), so the parse check uses the installed
+  Chrome with Mermaid loaded from jsDelivr instead of `@mermaid-js/mermaid-cli`. The diagram
+  sources live in one scratch file that both the README patch and the checker read, so the check
+  covered exactly what shipped; the final check ran on the README itself.
+- README sections changed: Workflow (diagram, control paragraph, branch table), How the LLM uses
+  tools (sequence diagram), Architecture (component diagram and legend note).
+- Problems: none.
+
+### 9. Report material in the README — ✅ Done (one record provisional)
+- Test: read back against the code and this log. Added "Step contracts" (12 rows: steps 1 to 10
+  with 5b and 5c, naming the actual fields, tables and audit steps), "Design decision records" (6
+  records), "Next steps", "AI-use disclosure (draft)" and the placeholder "Decisions to revisit
+  from Milestone 1". The decision records' numbers come from B1 and Step 1 (variant c vs a),
+  E4 (cropping: 145/200 vs 200/200 on the same 40 documents), E10 (model choice), the dataset
+  analysis (22,858 prior defaulters all repaid; 22,142 cleaned rows at 45.2%) and E6/E7 (number
+  check). Each measured comparison names the rule it was judged by.
+- Changes: `README.md` only.
+- Decisions: the model-choice record uses the **one-sample** E10 numbers, marked as such, because
+  Step 7 could not run; it should be replaced with the 20-sample results. I added a sixth record
+  (fixed workflow versus an agent choosing steps), since the spec asks for at least five and
+  Step 8's control paragraph makes the same decision. The AI-use disclosure is labelled a draft,
+  with a prompt for the team's own checks.
+- README sections changed: new sections Step contracts, Design decision records, Next steps,
+  AI-use disclosure (draft), Decisions to revisit from Milestone 1.
+- Problems: my first draft said the S04 explanation had "8 figures"; recounting the E6 entry
+  found 11, which is now corrected.

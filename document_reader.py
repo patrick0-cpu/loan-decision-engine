@@ -20,6 +20,11 @@ from db import Document, ExtractedField, log
 from documents import page_images
 
 PERIODS_PER_YEAR = {"weekly": 52, "biweekly": 26, "semimonthly": 24, "monthly": 12}
+MAX_ATTEMPTS = 2  # one retry when the reply has a problem the model can fix
+# Step 3 problems a second try can fix (format or shape). A null "not found" value, an
+# implausible date or a negative amount is about the document itself, so it goes to review.
+FIXABLE = ("invalid JSON", "missing from the reply", "is not a number", "not a non-empty string",
+           "is not one of", "is not a YYYY-MM-DD date", "page ")
 
 # Field name -> (JSON type, required). Every field comes back as {value, page, confidence}.
 FIELDS = {
@@ -185,18 +190,40 @@ def validate(doc_type: str, reply: str, page_count: int, today: Optional[date] =
     return ex
 
 
+def fixable_problems(ex: Extraction) -> list[str]:
+    """Problems worth one retry, as text the model can act on."""
+    found = [f"invalid JSON ({ex.error})"] if ex.error else []
+    for name, problems in ex.problems.items():
+        found += [f"{name}: {p}" for p in problems if any(m in p for m in FIXABLE)]
+    return found
+
+
 def read_document(session: Session, doc: Document, model: Optional[str] = None) -> Extraction:
-    """Run steps 2 and 3 for one document and save its extracted_fields rows (caller commits)."""
+    """Run steps 2 and 3 for one document and save its extracted_fields rows (caller commits).
+    A reply with fixable problems gets one retry that quotes the problems back to the model."""
     model = model or llm.active_model()
     images = page_images(doc)
     prompt = (PROMPTS[doc.doc_type] + RULES_TEXT
               + f"\nThe document has {len(images)} page image(s). Reply with JSON only.")
+    messages = [{"role": "user", "content": prompt}]
     try:
-        reply = llm.chat([{"role": "user", "content": prompt}], purpose=f"document reader: "
-                         f"{doc.doc_type}", step="document_reader", model=model, images=images,
-                         schema=schema_for(doc.doc_type), think=False, session=session,
-                         application_id=doc.application_id)
-        ex = validate(doc.doc_type, reply.content, len(images))
+        retry_reason = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            reply = llm.chat(messages, purpose=f"document reader: {doc.doc_type}",
+                             step="document_reader", model=model, images=images,
+                             schema=schema_for(doc.doc_type), think=False, session=session,
+                             application_id=doc.application_id, attempt=attempt,
+                             retry_reason=retry_reason)
+            ex = validate(doc.doc_type, reply.content, len(images))
+            fixable = fixable_problems(ex)
+            if not fixable or attempt == MAX_ATTEMPTS:
+                break
+            retry_reason = "; ".join(fixable)
+            messages = messages + [
+                {"role": "assistant", "content": reply.content},
+                {"role": "user", "content": "Your reply had these problems: " + retry_reason
+                 + ". Reply again with the corrected JSON for the same document. Use null only "
+                   "for values that are not printed."}]
         raw = json.loads(reply.content) if ex.valid_json else {}
     except llm.LLMError as exc:
         ex = Extraction(document_id=doc.id, doc_type=doc.doc_type, error=str(exc))

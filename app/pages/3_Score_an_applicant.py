@@ -13,8 +13,10 @@ from documents import MAX_BYTES  # noqa: E402
 from workflow import PROFILE, STEPS, run_application  # noqa: E402
 
 st.title("Score an applicant")
-st.caption("Gender and age are not collected here: the model never uses them. The result is a "
-           "recommendation for a loan officer, never a decision.")
+st.caption("Gender and age are not collected here: the model never uses them. Neither are "
+           "employment experience or credit history length, which track age closely and were "
+           "removed from the model. The result is a recommendation for a loan officer, never a "
+           "decision.")
 
 model = scorer()
 if model is None:
@@ -69,8 +71,6 @@ with st.form(form_key):
         person_income = st.number_input("Annual income *", min_value=1.0,
                                         value=default("annual_income"), step=1000.0,
                                         format="%.0f")
-        person_emp_exp = st.number_input("Employment experience (years) *", min_value=0,
-                                         max_value=80, value=default("employment_years"), step=1)
         educations, homes = options("person_education"), options("person_home_ownership")
         person_education = st.selectbox("Education *", educations,
                                         index=index_of(educations, "education"))
@@ -95,10 +95,6 @@ with st.form(form_key):
         st.markdown("**Credit**")
         credit_score = st.number_input("Credit score *", min_value=300, max_value=850,
                                        value=default("credit_score"), step=1)
-        cb_person_cred_hist_length = st.number_input("Credit history length (years) *",
-                                                     min_value=0.0, max_value=80.0,
-                                                     value=default("credit_history_years"),
-                                                     step=1.0, format="%.0f")
         previous_default = st.radio("Previous loan default on file *", ["No", "Yes"],
                                     horizontal=True, index=1 if default("previous_defaults") else 0,
                                     help="Used by the rule check only, not by the model.")
@@ -119,11 +115,11 @@ else:
 
 if submitted:
     form = dict(full_name=(full_name or "").strip(), person_income=person_income,
-                person_emp_exp=person_emp_exp, person_education=person_education,
+                person_education=person_education,
                 person_home_ownership=person_home_ownership, loan_amnt=loan_amnt,
                 loan_intent=loan_intent, loan_int_rate=loan_int_rate,
                 loan_percent_income=loan_percent_income, term_months=term_months,
-                credit_score=credit_score, cb_person_cred_hist_length=cb_person_cred_hist_length,
+                credit_score=credit_score,
                 previous_loan_defaults_on_file=previous_default)
     optional = {"loan_percent_income", "term_months"}
     missing = [k for k, v in form.items() if k not in optional and v in (None, "")]

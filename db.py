@@ -116,6 +116,43 @@ class Application(Base):
     officer_reviews: Mapped[list["OfficerReview"]] = relationship(back_populates="application")
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="application")
 
+    # A "run" is the initial workflow or one "Re-run checks" after an officer's correction.
+    # Re-runs add new rows and keep the old ones, so views and tools read the current run only.
+    RERUN_STEP, RERUN_STARTED = "rerun_checks", "re-run checks started"
+
+    def run_start(self) -> Optional["AuditLog"]:
+        """The audit row that started the latest re-run, or None for the initial run."""
+        starts = [a for a in self.audit_logs
+                  if a.step == self.RERUN_STEP and a.action == self.RERUN_STARTED]
+        return max(starts, key=lambda a: a.id) if starts else None
+
+    def _in_run(self, rows):
+        start = self.run_start()
+        return [r for r in rows if start is None or r.created_at >= start.created_at]
+
+    def run_audit(self) -> list["AuditLog"]:
+        start = self.run_start()
+        return sorted((a for a in self.audit_logs if start is None or a.id > start.id),
+                      key=lambda a: a.id)
+
+    @property
+    def current_calculations(self) -> list["Calculation"]:
+        return sorted(self._in_run(self.calculations), key=lambda c: c.id)
+
+    @property
+    def current_flags(self) -> list["Flag"]:
+        return sorted(self._in_run(self.flags), key=lambda f: f.id)
+
+    @property
+    def current_risk_score(self) -> Optional["RiskScore"]:
+        rows = self._in_run(self.risk_scores)
+        return max(rows, key=lambda r: r.id) if rows else None
+
+    @property
+    def current_recommendation(self) -> Optional["Recommendation"]:
+        rows = self._in_run(self.recommendations)
+        return max(rows, key=lambda r: r.id) if rows else None
+
 
 class Document(Base):
     """File location only, not the file itself. The SHA-256 proves later that the file on disk
@@ -135,6 +172,13 @@ class Document(Base):
 
     application: Mapped[Application] = relationship(back_populates="documents")
     extracted_fields: Mapped[list["ExtractedField"]] = relationship(back_populates="document")
+
+    def latest_fields(self) -> dict[str, "ExtractedField"]:
+        """The newest row per field name (a re-run adds a recomputed annual_income row)."""
+        out: dict[str, ExtractedField] = {}
+        for f in sorted(self.extracted_fields, key=lambda f: f.id):
+            out[f.field_name] = f
+        return out
 
 
 class ExtractedField(Base):

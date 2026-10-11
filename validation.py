@@ -78,6 +78,15 @@ def unsupported_numbers(text: str, sources: Any) -> list[str]:
     return [n["text"] for n in numbers_in(text) if not _matches(n, allowed)]
 
 
+FIXABLE_KINDS = ("SCHEMA", "REASON_CODE")  # a second try can fix format and codes
+
+
+def fixable_failures(failures: Optional[list[str]]) -> list[str]:
+    """Step 8 failures worth one retry of the final answer (wrong type, missing field, invalid
+    reason code). Number and consistency failures go straight to the officer as marked."""
+    return [f for f in failures or [] if f.split(":")[0] in FIXABLE_KINDS]
+
+
 def validate_recommendation(answer: Any, *, tool_results: Any, flags: list[dict],
                             default_probability: Optional[float],
                             contribution_terms: Iterable[str]) -> list[str]:

@@ -28,23 +28,26 @@ def latest_model_path(folder: str | Path = "models") -> Path:
 
 
 class RiskScorer:
-    def __init__(self, model_path: str | Path):
+    def __init__(self, model_path: str | Path, check_features: bool = True):
+        """check_features=False loads an older model (for example to read the baseline behind a
+        stored score); such a model must not be used to score new applicants."""
         self.model_path = Path(model_path)
         self.ebm = joblib.load(self.model_path)
         self.metadata = json.loads(self.model_path.with_suffix(".json").read_text())
         self.model_version = self.metadata["model_version"]
         self.baseline_log_odds = round(float(np.ravel(self.ebm.intercept_)[0]), 4)
         self.features = self.metadata.get("features", FEATURES)
-        if self.features != FEATURES:
+        if check_features and self.features != FEATURES:
             raise ValueError(f"Model {self.model_version} was trained on {self.features}, "
                              f"but train_ebm.FEATURES is {FEATURES}.")
 
     def score(self, applicant: dict[str, Any]) -> dict[str, Any]:
-        missing = [f for f in FEATURES if applicant.get(f) is None]
+        features = self.features
+        missing = [f for f in features if applicant.get(f) is None]
         if missing:
             raise ValueError(f"Applicant is missing required features: {', '.join(missing)}")
 
-        X = pd.DataFrame([{f: applicant[f] for f in FEATURES}], columns=FEATURES)
+        X = pd.DataFrame([{f: applicant[f] for f in features}], columns=features)
         probability = float(self.ebm.predict_proba(X)[0, 1])
         contributions = {name: round(float(v), 4)
                          for name, v in zip(self.ebm.term_names_, self.ebm.eval_terms(X)[0])}

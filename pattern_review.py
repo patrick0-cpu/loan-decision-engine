@@ -16,9 +16,9 @@ import llm
 from db import Application, Flag, log
 from validation import unsupported_numbers
 
-FORM_FIELDS = ["person_income", "person_emp_exp", "person_education", "person_home_ownership",
+FORM_FIELDS = ["person_income", "person_education", "person_home_ownership",
                "loan_amnt", "loan_intent", "loan_int_rate", "loan_percent_income",
-               "credit_score", "cb_person_cred_hist_length", "previous_loan_defaults_on_file",
+               "credit_score", "previous_loan_defaults_on_file",
                "full_name"]
 
 SCHEMA = {
@@ -68,7 +68,7 @@ def review_inputs(app: Application, form: dict[str, Any]) -> dict[str, dict[str,
     """What the model sees and what evidence may cite: {document name: {field: value}}."""
     data = {"form": {k: form.get(k) for k in FORM_FIELDS if k in form}}
     for doc in sorted(app.documents, key=lambda d: d.id):
-        data[doc.doc_type] = {f.field_name: f.field_value for f in doc.extracted_fields}
+        data[doc.doc_type] = {name: f.field_value for name, f in doc.latest_fields().items()}
     return data
 
 

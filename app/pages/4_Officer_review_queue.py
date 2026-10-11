@@ -3,7 +3,7 @@ import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared import (CONTEXT_KEY, engine, format_probability, latest, page_layout,
+from shared import (CONTEXT_KEY, engine, format_probability, llm_status, page_layout, scorer,
                     show_application)
 
 st.set_page_config(page_title="Officer review queue", page_icon="👤", layout="wide")
@@ -11,6 +11,8 @@ page_layout()
 
 from db import Application, ExtractedField, OfficerReview, log  # noqa: E402
 from validation import GENERAL_REASONS  # noqa: E402
+from workflow import (STEPS, interrupted_after, interrupted_runs, mark_stopped,  # noqa: E402
+                      rerun_checks, resume)
 
 # Officer choice -> (officer_reviews.decision, new application status)
 DECISIONS = {
@@ -18,6 +20,7 @@ DECISIONS = {
     "Deny": ("denied", "denied"),
     "Request more information": ("request_info", "pending_applicant"),
 }
+REC_LABELS = {"approve": "🟢 approve", "deny": "🔴 deny", "refer": "🟡 refer"}
 
 st.title("Officer review queue")
 
@@ -26,12 +29,68 @@ if message := st.session_state.pop("review_message", None):
 
 
 def is_marked(app: Application) -> bool:
-    rec = latest(app.recommendations)
+    rec = app.current_recommendation
     return bool(rec and rec.marked_for_additional_review)
 
 
-REC_LABELS = {"approve": "🟢 approve", "deny": "🔴 deny", "refer": "🟡 refer"}
+def run_with_progress(label: str, fn):
+    """Run a workflow call with a per-step progress box; returns the result or None."""
+    with st.status(label, expanded=True) as box:
+        lines = {step: st.empty() for step in STEPS}
+        icons = {"running": "⏳", "done": "✅", "skipped": "⏭️", "failed": "⚠️"}
 
+        def progress(step, state, detail):
+            lines[step].markdown(f"{icons.get(state, '')} **{step}**" + (f": {detail}" if detail else ""))
+
+        try:
+            result = fn(progress)
+            box.update(label=f"{label}: done", state="complete")
+            return result
+        except Exception as exc:  # finished steps stay saved; the run shows as interrupted
+            box.update(label=f"{label}: stopped", state="error")
+            st.error(f"The run stopped: {exc}")
+            return None
+
+
+# ------------------------------------------------------------------ interrupted runs
+ok, model_name = llm_status()
+with Session(engine()) as s:
+    stuck = [(a.id, a.applicant.full_name, a.current_step, last)
+             for a, last in interrupted_runs(s)]
+if stuck:
+    st.subheader(f"Interrupted runs ({len(stuck)})")
+    minutes = interrupted_after().total_seconds() / 60
+    st.caption(f"These runs stopped partway: not in review, not finished, and no progress for "
+               f"{minutes:.0f} minutes. **Resume** continues from the first step whose result is "
+               "missing (finished steps are not redone). **Mark as stopped** closes the run as "
+               "incomplete (reason INTERRUPTED). Both are written to the audit log.")
+    st.dataframe(pd.DataFrame([{"Application": i, "Applicant": n, "Stopped at step": step,
+                                "Last activity (UTC)": f"{t:%Y-%m-%d %H:%M}"}
+                               for i, n, step, t in stuck]), hide_index=True, width="stretch")
+    with st.form("interrupted"):
+        options = {f"#{i}: {n} (stopped at {step})": i for i, n, step, _ in stuck}
+        picked = options[st.selectbox("Interrupted run", list(options))]
+        who = st.text_input("Your name *", key="recovery-name")
+        c1, c2 = st.columns(2)
+        do_resume = c1.form_submit_button("Resume", type="primary")
+        do_stop = c2.form_submit_button("Mark as stopped")
+    if (do_resume or do_stop) and not who.strip():
+        st.error("Enter your name to resume or stop a run.")
+    elif do_stop:
+        mark_stopped(picked, who.strip(), engine=engine())
+        st.session_state["review_message"] = f"Application #{picked} marked as stopped by {who.strip()}."
+        st.rerun()
+    elif do_resume:
+        result = run_with_progress(f"Resuming application #{picked}", lambda progress: resume(
+            picked, who.strip(), engine=engine(), scorer=scorer(),
+            model=model_name if ok else None, use_llm=ok, progress=progress))
+        if result is not None:
+            st.session_state["review_message"] = (f"Application #{picked} resumed by {who.strip()}; "
+                                                  f"status {result.status}.")
+            st.rerun()
+    st.divider()
+
+# ------------------------------------------------------------------ the queue
 with Session(engine()) as s:
     queue = s.scalars(select(Application).where(Application.status == "in_review")).all()
     queue = sorted(queue, key=lambda a: (not is_marked(a), a.created_at))  # marked, then oldest
@@ -41,7 +100,7 @@ with Session(engine()) as s:
 
     rows = []
     for a in queue:
-        score, rec = latest(a.risk_scores), latest(a.recommendations)
+        score, rec = a.current_risk_score, a.current_recommendation
         recommendation = rec.recommendation if rec else "refer"
         if rec is None or rec.passed_validation is None:
             validation = "not run"
@@ -52,7 +111,7 @@ with Session(engine()) as s:
             "Loan amount": a.loan_amount,
             "Recommendation": REC_LABELS.get(recommendation, recommendation),
             "Default probability": format_probability(score.default_probability) if score else "",
-            "Critical flags": sum(f.severity == "critical" for f in a.flags),
+            "Critical flags": sum(f.severity == "critical" for f in a.current_flags),
             "Validation": validation,
             "Confidence": "" if rec is None or rec.confidence is None else f"{rec.confidence:.2f}",
             "Marked for review": ("🚩 " + "; ".join(rec.review_reasons)) if is_marked(a) else "",
@@ -90,22 +149,28 @@ with Session(engine()) as s:
     app = s.get(Application, selected_id)
     st.divider()
     show_application(app)
-    rec = latest(app.recommendations)
+    rec = app.current_recommendation
     reason_options = list(dict.fromkeys(
-        [f.code for f in app.flags] + (rec.reason_codes if rec else []) + GENERAL_REASONS))
-    field_options = {
-        f"{d.doc_type} · {f.field_name} = {f.field_value if f.field_value is not None else '(not found)'}"
-        f" (page {f.source_page or '?'})" + ("  ⚠️ needs review" if f.needs_review else "")
-        + ("  ✅ verified" if f.verified_by_human else ""): (f.id, f.field_value)
-        for d in sorted(app.documents, key=lambda d: d.id)
-        for f in sorted(d.extracted_fields, key=lambda f: f.id) if f.extraction_model != "code"}
+        [f.code for f in app.current_flags] + (rec.reason_codes if rec else []) + GENERAL_REASONS))
+    field_options = {}
+    any_verified = False
+    for d in sorted(app.documents, key=lambda d: d.id):
+        for f in d.latest_fields().values():
+            if f.extraction_model == "code":
+                continue  # computed by code from other fields; re-run checks recomputes it
+            any_verified |= f.verified_by_human
+            value = f.field_value if f.field_value is not None else "(not found)"
+            label = (f"{d.doc_type} · {f.field_name} = {value} (page {f.source_page or '?'})"
+                     + ("  ⚠️ needs review" if f.needs_review else "")
+                     + ("  ✅ verified" if f.verified_by_human else ""))
+            field_options[label] = (f.id, f.field_value)
 
 if field_options:
     st.divider()
     st.subheader("Verify extracted fields")
     st.caption("Check a value against the document (use *View / download* above), then confirm it "
                "or enter the correct value. This marks the field as verified by a human and is "
-               "written to the audit log. Rule checks and the recommendation are not re-run.")
+               "written to the audit log. Then use **Re-run checks** to recalculate with it.")
     with st.form(f"verify-{selected_id}"):
         verifier = st.text_input("Your name *", key=f"verifier-{selected_id}")
         picked = st.selectbox("Field", list(field_options))
@@ -129,8 +194,30 @@ if field_options:
                 s.commit()
             st.session_state["review_message"] = (
                 f"Field {field_name} " + ("corrected" if new_value != old_value else "confirmed")
-                + f" by {verifier.strip()}.")
+                + f" by {verifier.strip()}. Use Re-run checks to recalculate with it.")
             st.rerun()
+
+    if any_verified:
+        with st.form(f"rerun-{selected_id}"):
+            st.markdown("**Re-run checks** with the verified values: steps 3 to 9 again (extraction "
+                        "validation, calculations, rules, pattern review, score, Coordinator, "
+                        "validation, gatekeeper), without reading the documents again. New results "
+                        "are added; earlier ones stay in the record.")
+            rerunner = st.text_input("Your name *", key=f"rerunner-{selected_id}")
+            do_rerun = st.form_submit_button("Re-run checks")
+        if do_rerun:
+            if not rerunner.strip():
+                st.error("Enter your name to re-run the checks.")
+            else:
+                result = run_with_progress(
+                    f"Re-running checks for application #{selected_id}",
+                    lambda progress: rerun_checks(selected_id, rerunner.strip(), engine=engine(),
+                                                  scorer=scorer(), model=model_name if ok else None,
+                                                  use_llm=ok, progress=progress))
+                if result is not None:
+                    st.session_state["review_message"] = (
+                        f"Checks re-run for application #{selected_id} by {rerunner.strip()}.")
+                    st.rerun()
 
 st.divider()
 st.subheader("Officer decision")
@@ -160,7 +247,7 @@ if submitted:
             if app.status != "in_review":
                 st.error(f"Application #{app.id} is no longer in review (status: {app.status}).")
                 st.stop()
-            rec = latest(app.recommendations)
+            rec = app.current_recommendation
             s.add(OfficerReview(application_id=app.id, officer_name=officer_name,
                                 decision=decision, reason_codes=reason_codes,
                                 notes=notes.strip() or None))
