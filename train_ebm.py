@@ -219,11 +219,13 @@ def performance_data(y_test: pd.Series, proba: np.ndarray) -> dict:
             "confusion_matrix": confusion}
 
 
-def explanation_data(ebm) -> dict:
+def explanation_data(ebm, train_df: pd.DataFrame) -> dict:
     """Shape function per single-feature term and a grid per pair term, from explain_global().
 
     Long numeric shapes are downsampled to about MAX_POINTS bins. EBM bins are quantile-based, so
-    evenly spaced bin indices keep detail where the data is dense.
+    evenly spaced bin indices keep detail where the data is dense. Numeric density comes from the
+    training rows (40 bins up to the 99th percentile), because the EBM's own density bins span
+    the full range and hide the bulk of skewed features such as income.
     """
     explanation = ebm.explain_global()
     terms = {}
@@ -236,19 +238,25 @@ def explanation_data(ebm) -> dict:
             if categorical:
                 keep = np.arange(len(scores))
                 x = [str(n) for n in names]
+                density = {"x": [str(n) for n in d["density"]["names"]],
+                           "count": [int(c) for c in d["density"]["scores"]]}
             else:
                 keep = _pick(len(scores))
                 x = _floats(np.asarray(names, dtype=float)[keep])  # left edge of each kept bin
+                values = train_df[term].astype(float)
+                view_max = float(values.quantile(0.99))
+                counts, edges = np.histogram(values[values <= view_max], bins=40)
+                density = {"x": _floats(edges), "count": counts.tolist(),
+                           "above_view": int((values > view_max).sum())}
             terms[term] = {
                 "type": "categorical" if categorical else "numeric",
                 "x": x,
                 "x_max": None if categorical else round(float(names[-1]), 4),
+                "view_max": None if categorical else round(view_max, 4),
                 "contribution": _floats(scores[keep]),
                 "upper": _floats(np.asarray(d["upper_bounds"])[keep]),
                 "lower": _floats(np.asarray(d["lower_bounds"])[keep]),
-                "density": {"x": [str(n) if categorical else round(float(n), 4)
-                                  for n in d["density"]["names"]],
-                            "count": [int(c) for c in d["density"]["scores"]]},
+                "density": density,
             }
         else:
             grid = np.asarray(d["scores"])
@@ -334,7 +342,7 @@ def train(df: pd.DataFrame, target_means: str, out_dir: Path, interactions=None,
         "feature_importance": {name: round(float(v), 4) for name, v in importance},
         "fairness": fairness,
         "performance": performance_data(y_test, proba),
-        "shape_functions": explanation_data(ebm),
+        "shape_functions": explanation_data(ebm, train_df),
         "note": "Trained on a synthetic Kaggle dataset (udaymalviya/bank-loan-data). "
                 "Results are for a prototype, not real-world accuracy claims.",
     }

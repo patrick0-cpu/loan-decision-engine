@@ -33,6 +33,7 @@ class RiskScorer:
         self.ebm = joblib.load(self.model_path)
         self.metadata = json.loads(self.model_path.with_suffix(".json").read_text())
         self.model_version = self.metadata["model_version"]
+        self.baseline_log_odds = round(float(np.ravel(self.ebm.intercept_)[0]), 4)
         self.features = self.metadata.get("features", FEATURES)
         if self.features != FEATURES:
             raise ValueError(f"Model {self.model_version} was trained on {self.features}, "
@@ -52,7 +53,7 @@ class RiskScorer:
         return {
             "model_version": self.model_version,
             "default_probability": round(probability, 4),
-            "baseline_log_odds": round(float(np.ravel(self.ebm.intercept_)[0]), 4),
+            "baseline_log_odds": self.baseline_log_odds,
             "contributions": contributions,
             "top_risk_drivers": [(k, v) for k, v in ranked if v > 0][:3],
             "top_protective_factors": [(k, v) for k, v in reversed(ranked) if v < 0][:3],

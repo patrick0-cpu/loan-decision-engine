@@ -357,3 +357,68 @@ that writes to a database uses a copy of `loans.db` selected through `DATABASE_U
   graph data. Training into `models/` with `--drop` is refused, so the dashboard can never load a
   model whose features differ from `train_ebm.FEATURES`.
 - Problems: none.
+
+### Part C. Model performance and EBM graphs
+
+### C1. Performance data saved at training time — ✅ Done
+- Test: read back from the model's `.json`. ROC: 100 points (downsampled from the full curve),
+  AUC 0.9413. Calibration: 10 bins, with every predicted average within 0.084 of the actual
+  default rate (largest gap in the 0.7-0.8 bin: 0.751 predicted, 0.835 actual, 145 loans).
+  Score distribution: 20 bins, summing to 2,429 repaid and 2,000 defaulted (= the 4,429 test
+  rows). Confusion at 0.5: TN 2,252, FP 177, FN 412, TP 1,588 (79.4% of defaults caught, 7.3% of
+  repaid loans flagged, precision 90.0%).
+- Changes: `train_ebm.py` (`performance_data`).
+- Decisions: calibration uses 10 equal-width bins of predicted probability (0-0.1 … 0.9-1.0).
+  ROC thresholds are capped at 1.0 (sklearn's first threshold is infinity, which JSON can't hold).
+- Problems: none.
+
+### C2. EBM explanation data saved at training time — ✅ Done
+- Test: the `.json` holds 10 single-feature terms (7 numeric with ≤100 points, 3 categorical)
+  and 30 pair grids (≤30×30). Each numeric term has contribution, upper and lower bounds, and a
+  density histogram. File size: about 300 KB.
+- Changes: `train_ebm.py` (`explanation_data`, using `ebm.explain_global().data(i)`;
+  `.visualize()` is never called).
+- Decisions: the main model includes pairs (variant a), so pair grids are saved. Numeric shapes
+  keep evenly spaced bin indices: EBM bins are quantile-based, so this keeps detail where the
+  data is dense. **Numeric density comes from the training rows** (40 bins up to the 99th
+  percentile, plus a count of the rows above it). The EBM's own density uses about 28 bins over
+  the full range, and for income (up to 2.4 million) the visible part collapsed into a single
+  bar. The 99th percentile (`view_max`) also sets the chart's initial zoom.
+- Problems: the density issue above was found by looking at a rendered PNG. Fixing it required
+  saving new data, so the main model was retrained with the same command:
+  `models/ebm-20261011T071422Z`, identical metrics (AUC 0.9413, accuracy 0.867, Brier 0.0937) and
+  fairness. It is now the newest model and the one the dashboard loads. The two older model
+  files stay in `models/`.
+
+### C3. Model page layout — ✅ Done
+- Test: AppTest renders page 2 with no exceptions. Sections appear in order: Performance,
+  Calibration, Score distribution, How the model sees each feature, Interactions, Global feature
+  importance, Fairness report. All 10 feature shape functions and the first 5 pair heatmaps were
+  selected and rendered. The waterfall, income and home-ownership shapes, and the top pair
+  heatmap were exported to PNG and checked by eye.
+- Changes: `app/pages/2_Model.py`, `app/shared.py` (`shape_chart`, `pair_heatmap`).
+- Decisions: interactions use one selector with one heatmap, ordered by importance, rather than
+  30 heatmaps stacked on the page. Numeric shapes are step lines (the EBM is piecewise constant)
+  with the bounds as a shaded band. Categorical shapes are bars with error bars, red when they
+  raise risk and blue when they lower it, each with a signed text label. The heatmap uses the
+  palette's blue↔red diverging pair with a grey midpoint, centred on 0. Older models without
+  graph data show a "retrain to see these graphs" note.
+- Problems: Streamlit's AppTest applies `format_func` twice when a test sets a selectbox, so the
+  page now uses label strings as the options. Rendered PNGs showed the waterfall labels colliding
+  with the term names (fixed by padding the x-axis range) and "(bin start)" on a category axis
+  (now added to numeric axes only).
+
+### C4. Applicant explanation waterfall — ✅ Done
+- Test: on a database copy, scored the high-risk and low-risk test applicants through page 3.
+  Waterfall total = baseline + every stored contribution, exactly: high risk +15.8353 log-odds
+  (stored probability 1.0), low risk −2.1391 log-odds → sigmoid 0.105354 (stored 0.1054). Pages
+  3 and 4 render the waterfall with no exceptions.
+- Changes: `app/shared.py` (`waterfall_rows`, `waterfall_chart`, `baseline_log_odds`; the
+  application view shows the waterfall, with the old bar chart in an expander),
+  `risk_scorer.py` (`RiskScorer.baseline_log_odds` attribute).
+- Decisions: `risk_scores` stores contributions but not the baseline, so the view reads the
+  baseline from the model file named by the stored `model_version` (no schema change). If that
+  file is gone, the view says so and shows only the bar chart. Steps: the 10 largest terms by
+  size, then "N other terms combined". The final bar is labelled with the log-odds and the A4
+  probability format.
+- Problems: none.

@@ -7,7 +7,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pandas as pd  # noqa: E402
+import math  # noqa: E402
+
 import plotly.graph_objects as go  # noqa: E402
+from plotly.subplots import make_subplots  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from db import Application, get_engine, load_historical  # noqa: E402
@@ -19,6 +22,8 @@ SERIES_2 = "#eb6834"   # orange
 RISK_UP = "#e34948"    # red: raises default risk
 RISK_DOWN = "#2a78d6"  # blue: lowers default risk
 REFERENCE_LINE = "#898781"
+NEUTRAL_MID = "#f0efec"  # grey midpoint of the blue <-> red diverging scale
+TOTAL_BAR = "#52514e"   # baseline and final score in the waterfall
 
 FEATURE_LABELS = {
     "person_education": "Education",
@@ -70,6 +75,15 @@ def scorer() -> RiskScorer | None:
     return _load_scorer(str(path))
 
 
+def baseline_log_odds(model_version: str) -> float | None:
+    """The intercept of the model that produced a stored score (risk_scores keeps only the
+    contributions). None if that model file is no longer in models/."""
+    path = latest_model_path().parent / f"{model_version}.pkl"
+    if not path.exists():
+        return None
+    return _load_scorer(str(path)).baseline_log_odds
+
+
 def no_model_warning():
     st.warning("No trained model yet. Run `python train_ebm.py --check`, then "
                "`python train_ebm.py --target-means default`, and reload this page.")
@@ -104,6 +118,127 @@ def contribution_chart(contributions: dict[str, float], top: int = 10) -> go.Fig
     fig.add_vline(x=0, line_width=1, line_color=REFERENCE_LINE)
     fig.update_xaxes(title="Contribution to the log-odds of default")
     return style_bars(fig, height=40 * len(rows) + 90)
+
+
+def waterfall_rows(baseline: float, contributions: dict[str, float],
+                   top: int = 10) -> tuple[list[tuple[str, float]], float]:
+    """Steps from the baseline log-odds to the applicant's score: the `top` largest contributions
+    (by size), then the rest combined. Returns (steps, total); total = baseline + every step."""
+    items = sorted(contributions.items(), key=lambda kv: abs(kv[1]), reverse=True)
+    steps = [(term_label(k), v) for k, v in items[:top]]
+    rest = items[top:]
+    if rest:
+        steps.append((f"{len(rest)} other terms combined", sum(v for _, v in rest)))
+    return steps, baseline + sum(v for _, v in steps)
+
+
+def waterfall_chart(baseline: float, contributions: dict[str, float], top: int = 10) -> go.Figure:
+    """Baseline -> each contribution -> final log-odds, labelled with the probability."""
+    steps, total = waterfall_rows(baseline, contributions, top)
+    probability = 1 / (1 + math.exp(-total))
+    labels = ["Baseline (average applicant)"] + [n for n, _ in steps] + ["Applicant's score"]
+    values = [baseline] + [v for _, v in steps] + [total]
+    text = ([f"{baseline:+.2f}"] + [f"{v:+.2f}" for _, v in steps]
+            + [f"{total:+.2f} = {format_probability(probability)}"])
+    fig = go.Figure(go.Waterfall(
+        orientation="h", y=labels, x=values, text=text, textposition="outside",
+        measure=["absolute"] + ["relative"] * len(steps) + ["total"],
+        increasing=dict(marker=dict(color=RISK_UP)), decreasing=dict(marker=dict(color=RISK_DOWN)),
+        totals=dict(marker=dict(color=TOTAL_BAR)), cliponaxis=False,
+        connector=dict(line=dict(color=REFERENCE_LINE, width=1, dash="dot")),
+        hovertemplate="%{y}<br>%{x:+.4f} log-odds<extra></extra>"))
+    running, ends = baseline, [0.0, baseline]
+    for _, v in steps:
+        running += v
+        ends.append(running)
+    lo, hi = min(ends), max(ends)
+    pad = (hi - lo) * 0.22 or 1
+    fig.add_vline(x=0, line_width=1, line_color=REFERENCE_LINE)
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    fig.update_xaxes(title="Log-odds of default (0 = 50% probability)", showgrid=True,
+                     zeroline=False, range=[lo - pad, hi + pad])
+    fig.update_layout(height=44 * len(labels) + 90, showlegend=False,
+                      margin=dict(l=10, r=110, t=20, b=10))
+    return fig
+
+
+def shape_chart(shape: dict, label: str) -> go.Figure:
+    """Contribution vs feature value with its uncertainty band, and the data density below."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22],
+                        vertical_spacing=0.04)
+    dens_x, dens_n = shape["density"]["x"], shape["density"]["count"]
+    if shape["type"] == "numeric":
+        x = shape["x"] + [shape["x_max"]]  # step function: each value holds until the next edge
+
+        def ext(values):
+            return values + [values[-1]]
+
+        fig.add_trace(go.Scatter(x=x, y=ext(shape["upper"]), mode="lines", line_shape="hv",
+                                 line=dict(width=0), hoverinfo="skip"), 1, 1)
+        fig.add_trace(go.Scatter(x=x, y=ext(shape["lower"]), mode="lines", line_shape="hv",
+                                 line=dict(width=0), fill="tonexty",
+                                 fillcolor="rgba(42,120,214,0.18)", hoverinfo="skip"), 1, 1)
+        fig.add_trace(go.Scatter(x=x, y=ext(shape["contribution"]), mode="lines",
+                                 line_shape="hv", line=dict(color=SERIES_1, width=2),
+                                 hovertemplate=label + " from %{x:,.4g}<br>"
+                                               "%{y:+.3f} log-odds<extra></extra>"), 1, 1)
+        if len(dens_x) == len(dens_n) + 1:  # density names are bin edges
+            mids = [(a + b) / 2 for a, b in zip(dens_x[:-1], dens_x[1:])]
+            widths = [(b - a) * 0.95 for a, b in zip(dens_x[:-1], dens_x[1:])]
+        else:
+            mids, widths = dens_x, None
+        fig.add_trace(go.Bar(x=mids, y=dens_n, width=widths, marker_color=REFERENCE_LINE,
+                             hovertemplate="around %{x:,.4g}<br>%{y:,} loans<extra></extra>"),
+                      2, 1)
+        # Long right tails (income, loan amount) squash the chart, so start zoomed on the bulk
+        # of the data (up to the 99th percentile); the toolbar's autoscale shows the full range.
+        hi = shape.get("view_max") or shape["x_max"]
+        fig.update_xaxes(range=[shape["x"][0], hi])
+        fig.update_xaxes(title=label, row=2, col=1)
+    else:
+        c = shape["contribution"]
+        fig.add_trace(go.Bar(
+            x=shape["x"], y=c, marker_color=[RISK_UP if v > 0 else RISK_DOWN for v in c],
+            error_y=dict(type="data", symmetric=False, color=REFERENCE_LINE,
+                         array=[u - v for u, v in zip(shape["upper"], c)],
+                         arrayminus=[v - lo for v, lo in zip(c, shape["lower"])]),
+            text=[f"{v:+.2f}" for v in c], textposition="outside", cliponaxis=False,
+            hovertemplate="%{x}<br>%{y:+.3f} log-odds<extra></extra>"), 1, 1)
+        fig.add_trace(go.Bar(x=dens_x, y=dens_n, marker_color=REFERENCE_LINE,
+                             hovertemplate="%{x}<br>%{y:,} loans<extra></extra>"), 2, 1)
+        fig.update_xaxes(title=label, row=2, col=1)
+    fig.add_hline(y=0, line_width=1, line_color=REFERENCE_LINE, row=1, col=1)
+    fig.update_yaxes(title="Contribution (log-odds)", row=1, col=1)
+    fig.update_yaxes(title="Loans", row=2, col=1)
+    fig.update_layout(height=470, showlegend=False, barcornerradius=3, bargap=0.25,
+                      margin=dict(l=10, r=10, t=20, b=10))
+    return fig
+
+
+def _axis_labels(values) -> list[str]:
+    return [v if isinstance(v, str) else f"{v:,.4g}" for v in values]
+
+
+def pair_heatmap(shape: dict) -> go.Figure:
+    """Grid of an interaction term's contribution (log-odds), diverging around zero."""
+    a, b = shape["features"]
+    grid = shape["contribution"]  # [x index][y index]
+    z = [[grid[i][j] for i in range(len(grid))] for j in range(len(grid[0]))]
+    limit = max(abs(v) for row in grid for v in row) or 1
+    fig = go.Figure(go.Heatmap(
+        x=_axis_labels(shape["x"]), y=_axis_labels(shape["y"]), z=z, zmid=0, zmin=-limit,
+        zmax=limit, colorscale=[[0, RISK_DOWN], [0.5, NEUTRAL_MID], [1, RISK_UP]],
+        xgap=1, ygap=1, colorbar=dict(title="log-odds"),
+        hovertemplate=term_label(a) + " %{x}<br>" + term_label(b) + " %{y}<br>"
+                      "%{z:+.3f} log-odds<extra></extra>"))
+    def title(feature, values):
+        numeric = any(not isinstance(v, str) for v in values)
+        return term_label(feature) + (" (bin start)" if numeric else "")
+
+    fig.update_xaxes(title=title(a, shape["x"]), type="category")
+    fig.update_yaxes(title=title(b, shape["y"]), type="category")
+    fig.update_layout(height=480, margin=dict(l=10, r=10, t=20, b=10))
+    return fig
 
 
 def show_flag(flag):
@@ -180,10 +315,20 @@ def show_application(app: Application):
         c1.caption(f"Model {score.model_version}. Trained on synthetic data; a prototype score, "
                    "not a real-world estimate.")
         with c2:
-            st.caption("Largest contributions. **Red bars (positive) raise** default risk; "
-                       "**blue bars (negative) lower** it. Pairs (A × B) are interaction terms.")
-            st.plotly_chart(contribution_chart(score.contributions), width="stretch",
-                            key=f"contrib-{app.id}")
+            baseline = baseline_log_odds(score.model_version)
+            if baseline is None:
+                st.caption(f"Model file {score.model_version} is no longer in models/, so the "
+                           "baseline is unknown; showing contributions only.")
+            else:
+                st.caption("How the score adds up: start at the baseline (an average applicant), "
+                           "add each term's contribution, end at this applicant's score. "
+                           "**Red steps raise** default risk; **blue steps lower** it. Pairs "
+                           "(A × B) are interaction terms.")
+                st.plotly_chart(waterfall_chart(baseline, score.contributions), width="stretch",
+                                key=f"waterfall-{app.id}")
+            with st.expander("Contribution bar chart", expanded=baseline is None):
+                st.plotly_chart(contribution_chart(score.contributions), width="stretch",
+                                key=f"contrib-{app.id}")
 
     st.markdown("##### Recommendation")
     if rec is None:
