@@ -1,7 +1,7 @@
 {
  "date": "2026-10-11",
  "model": "qwen3.5:latest",
- "llm_available": false,
+ "llm_available": true,
  "risk_model": "ebm-20261011T230951Z",
  "cases": [
   {
@@ -10,11 +10,55 @@
    "sample": "S06",
    "input": "S06 form + documents",
    "expected": "Completes steps 1 to 9; approve or refer; validation passes; pauses at in_review; a scripted officer approval is written to officer_reviews and the status becomes approved",
-   "actual": "not run: the LLM server is unavailable",
-   "passed": null,
-   "evidence": {},
-   "seconds": {},
-   "interpretation": "Draft: blocked. Rerun when the school server is reachable."
+   "actual": "recommendation approve, validation passed, paused at in_review, then approved by Eval Officer (status approved)",
+   "passed": true,
+   "evidence": {
+    "application_id": 1,
+    "status": "approved",
+    "current_step": "officer_decision",
+    "flags": [],
+    "default_probability": 0.0238,
+    "recommendation": "approve",
+    "confidence": 0.95,
+    "passed_validation": true,
+    "review_reasons": [],
+    "officer_decision": [
+     [
+      "approved",
+      "Eval Officer"
+     ]
+    ],
+    "audit_rows": 24,
+    "audit_steps": {
+     "intake": 1,
+     "completeness_check": 1,
+     "document_reader": 2,
+     "extraction_validation": 2,
+     "calculations": 1,
+     "rule_check": 1,
+     "pattern_review": 1,
+     "evidence_check": 1,
+     "risk_scoring": 1,
+     "coordinator": 9,
+     "output_validation": 1,
+     "gatekeeper": 1,
+     "status": 1,
+     "officer_review": 1
+    }
+   },
+   "seconds": {
+    "completeness": 0.05,
+    "document_reader": 8.79,
+    "calculations": 0.01,
+    "rule_check": 0.0,
+    "pattern_review": 66.98,
+    "risk_score": 0.01,
+    "coordinator_and_validation": 18.35,
+    "gatekeeper": 0.01
+   },
+   "total_seconds": 94.22,
+   "interpretation": "Draft: the full path from intake to an officer's decision works on a clean sample. It does not show accuracy on real documents (the samples are clean generated PDFs) or how the model behaves on borderline applicants. Next: add borderline samples.",
+   "field_accuracy": "10/10"
   },
   {
    "case": "Planted mismatch",
@@ -22,11 +66,54 @@
    "sample": "S01",
    "input": "S01 form + documents (planted mismatch)",
    "expected": "INCOME_MISMATCH critical flag; marked for additional review",
-   "actual": "not run: the LLM server is unavailable",
-   "passed": null,
-   "evidence": {},
-   "seconds": {},
-   "interpretation": "Draft: blocked. Rerun when the school server is reachable."
+   "actual": "flags INCOME_MISMATCH (critical), ANNUAL_INCOME_MISMATCH_FORM_STUB (warning); recommendation refer; marked: CRITICAL_FLAG:INCOME_MISMATCH",
+   "passed": true,
+   "evidence": {
+    "application_id": 2,
+    "status": "in_review",
+    "current_step": "officer_review",
+    "flags": [
+     "INCOME_MISMATCH (critical)",
+     "ANNUAL_INCOME_MISMATCH_FORM_STUB (warning)"
+    ],
+    "default_probability": 0.0902,
+    "recommendation": "refer",
+    "confidence": 0.9,
+    "passed_validation": true,
+    "review_reasons": [
+     "CRITICAL_FLAG:INCOME_MISMATCH"
+    ],
+    "officer_decision": [],
+    "audit_rows": 25,
+    "audit_steps": {
+     "intake": 1,
+     "completeness_check": 1,
+     "document_reader": 2,
+     "extraction_validation": 2,
+     "calculations": 1,
+     "rule_check": 1,
+     "pattern_review": 1,
+     "evidence_check": 1,
+     "risk_scoring": 1,
+     "coordinator": 11,
+     "output_validation": 1,
+     "gatekeeper": 1,
+     "status": 1
+    }
+   },
+   "seconds": {
+    "completeness": 0.0,
+    "document_reader": 8.82,
+    "calculations": 0.0,
+    "rule_check": 0.0,
+    "pattern_review": 120.1,
+    "risk_score": 0.01,
+    "coordinator_and_validation": 25.6,
+    "gatekeeper": 0.0
+   },
+   "total_seconds": 154.55,
+   "interpretation": "Draft: the pay stub income read by the LLM, multiplied out by code, triggers the critical INCOME_MISMATCH rule, and the gatekeeper marks the case. The planted gap is 123% of stated income, far above the 15% limit, so this does not test borderline gaps. Next: samples at 10-20%.",
+   "field_accuracy": "10/10"
   },
   {
    "case": "Invalid file (text renamed to .pdf)",
@@ -37,7 +124,7 @@
    "actual": "status stopped_incomplete; reason: document: bank_statement (Only PDF, PNG and JPG files are accepted.)",
    "passed": true,
    "evidence": {
-    "application_id": 1,
+    "application_id": 3,
     "status": "stopped_incomplete",
     "current_step": "completeness_check",
     "flags": [],
@@ -54,9 +141,9 @@
     }
    },
    "seconds": {
-    "completeness": 0.05
+    "completeness": 0.0
    },
-   "total_seconds": 0.05,
+   "total_seconds": 0.01,
    "interpretation": "Draft: the file-signature check rejects a text file renamed to .pdf before anything is read or scored. It does not test a real but corrupted or password-protected PDF beyond pypdfium2's own error. Next: add those files."
   },
   {
@@ -68,7 +155,7 @@
    "actual": "status stopped_incomplete; missing: document: bank_statement",
    "passed": true,
    "evidence": {
-    "application_id": 2,
+    "application_id": 4,
     "status": "stopped_incomplete",
     "current_step": "completeness_check",
     "flags": [],
@@ -99,7 +186,7 @@
    "actual": "status in_review; recommendation refer; probability 0.6342; marked: LLM_UNAVAILABLE, EXTRACTION_NEEDS_REVIEW",
    "passed": 1,
    "evidence": {
-    "application_id": 3,
+    "application_id": 5,
     "status": "in_review",
     "current_step": "officer_review",
     "flags": [],
@@ -128,10 +215,10 @@
     "completeness": 0.0,
     "calculations": 0.01,
     "rule_check": 0.0,
-    "risk_score": 0.0,
+    "risk_score": 0.01,
     "gatekeeper": 0.0
    },
-   "total_seconds": 0.02,
+   "total_seconds": 0.03,
    "interpretation": "Draft: without the LLM the application is still calculated, rule-checked, scored and handed to the officer, marked LLM_UNAVAILABLE. Documents are stored but not read, so INCOME_MISMATCH cannot fire. Next: none."
   },
   {
@@ -143,37 +230,40 @@
    "actual": "stopped at risk_scoring, resumed to in_review; steps run twice: none",
    "passed": true,
    "evidence": {
-    "application_id": 4,
+    "application_id": 6,
     "status": "in_review",
     "current_step": "officer_review",
     "flags": [],
     "default_probability": 0.6342,
-    "recommendation": "refer",
-    "confidence": null,
-    "passed_validation": null,
-    "review_reasons": [
-     "LLM_UNAVAILABLE",
-     "EXTRACTION_NEEDS_REVIEW"
-    ],
+    "recommendation": "deny",
+    "confidence": 0.85,
+    "passed_validation": true,
+    "review_reasons": [],
     "officer_decision": [],
-    "audit_rows": 8,
+    "audit_rows": 25,
     "audit_steps": {
      "intake": 1,
      "completeness_check": 1,
-     "llm": 1,
+     "document_reader": 2,
+     "extraction_validation": 2,
      "calculations": 1,
      "rule_check": 1,
+     "pattern_review": 1,
+     "evidence_check": 1,
      "risk_scoring": 1,
+     "coordinator": 11,
+     "output_validation": 1,
      "gatekeeper": 1,
      "status": 1
     }
    },
    "seconds": {
-    "first_attempt": 0.01,
-    "risk_score": 0.0,
+    "first_attempt": 45.73,
+    "risk_score": 0.15,
+    "coordinator_and_validation": 25.66,
     "gatekeeper": 0.0
    },
-   "total_seconds": 0.02,
+   "total_seconds": 71.55,
    "interpretation": "Draft: a run cut off inside a step resumes from that step without redoing finished ones. The interruption here is an exception raised inside the step; the build log also records a real process kill. Next: none."
   }
  ]

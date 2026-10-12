@@ -15,9 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import llm
-from calculations import FORMULAS, CalcResult, check_rules as rule_check, run_calculations as calc
+from calculations import (FORMULAS, RULES, CalcResult, check_rules as rule_check,
+                          run_calculations as calc)
 from db import Application, AuditLog, Calculation, Flag, RiskScore, log
-from validation import GENERAL_REASONS, RECOMMENDATION_SCHEMA, fixable_failures
+from validation import (DENY_FLOOR, GENERAL_REASONS, HIGH_RISK, RECOMMENDATION_SCHEMA,
+                        fixable_failures)
 
 MAX_TOOL_CALLS = 8
 MAX_FINAL_ATTEMPTS = 2  # the final answer gets one retry if it fails a check the model can fix
@@ -177,6 +179,8 @@ def tool_check_rules(session: Session, app: Application, scorer=None) -> dict:
         session.flush()
         session.refresh(app)
     return {"documented_income": documented_income(app),
+            # Every rule limit, fired or not, so an explanation can cite one from a tool result.
+            "rule_limits": dict(RULES),
             "flags": [_flag_dict(f) for f in app.current_flags if f.source == "rule"]}
 
 
@@ -218,6 +222,10 @@ def tool_score_risk(session: Session, app: Application, scorer=None) -> dict:
         "top_protective_factors": [{"term": k, "contribution": v}
                                    for k, v in reversed(ranked) if v < 0][:3],
         "contributions": score.contributions,
+        # The decision policy's probability thresholds (the same values validation enforces),
+        # so an explanation that cites them quotes a tool result.
+        "policy_thresholds": {"high_risk_probability": HIGH_RISK,
+                              "deny_needs_flags_below": DENY_FLOOR},
         "note": "Positive contributions raise default risk; negative ones lower it. "
                 "Gender and age are not model inputs.",
     }

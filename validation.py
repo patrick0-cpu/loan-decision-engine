@@ -9,6 +9,8 @@ GENERAL_REASONS = ["INSUFFICIENT_INCOME", "HIGH_DEBT_BURDEN", "WEAK_CREDIT_HISTO
                    "INCOMPLETE_DOCUMENTATION", "UNVERIFIED_INCOME", "OFFICER_JUDGMENT",
                    "LOW_MODEL_RISK", "NO_RULE_FLAGS"]
 MIN_CONFIDENCE = 0.7
+HIGH_RISK = 0.5    # no approve at or above this default probability
+DENY_FLOOR = 0.2   # no deny without flags below this default probability
 
 RECOMMENDATION_SCHEMA = {
     "type": "object",
@@ -122,11 +124,12 @@ def validate_recommendation(answer: Any, *, tool_results: Any, flags: list[dict]
     p = default_probability
     if rec == "approve" and critical:
         failures.append(f"CONSISTENCY: approve while critical flags exist ({', '.join(critical)})")
-    if rec == "approve" and p is not None and p >= 0.5:
-        failures.append(f"CONSISTENCY: approve while the default probability is {p} (0.5 or above)")
-    if rec == "deny" and not flags and p is not None and p < 0.2:
+    if rec == "approve" and p is not None and p >= HIGH_RISK:
+        failures.append(f"CONSISTENCY: approve while the default probability is {p} "
+                        f"({HIGH_RISK} or above)")
+    if rec == "deny" and not flags and p is not None and p < DENY_FLOOR:
         failures.append(f"CONSISTENCY: deny with no flags and a default probability of {p} "
-                        "(below 0.2)")
+                        f"(below {DENY_FLOOR})")
     return failures
 
 

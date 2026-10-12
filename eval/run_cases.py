@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = ROOT / "samples"
+ENGINES = []  # every engine opened on the copy, closed before the copy is deleted
 STEP_LABELS = ["completeness", "extraction_validation", "document_reader", "calculations",
                "rule_check", "pattern_review", "risk_score", "coordinator_and_validation",
                "gatekeeper"]
@@ -159,6 +160,7 @@ def run_cases(model: str | None) -> list[dict]:
     from workflow import continue_application, run_application, start_application
 
     engine, scorer = get_engine(), RiskScorer(latest_model_path())
+    ENGINES.append(engine)
     key = load_key()
     llm_ok = llm.available()
     clean = pick_clean_sample(key, scorer)
@@ -345,6 +347,7 @@ def run_compare(models: list[str], sample_ids: list[str]) -> dict:
     if not llm.available():
         return {"error": "the LLM server is unavailable", "models": models}
     engine, scorer = get_engine(), RiskScorer(latest_model_path())
+    ENGINES.append(engine)
     key = {k["sample_id"]: k for k in load_key()}
     report = {}
     for model in models:
@@ -518,7 +521,13 @@ def main():
             (out / "cases.md").write_text(markdown_cases(cases, meta), encoding="utf-8")
             print(f"\nWrote {out / 'cases.md'} and cases.json")
     finally:
+        # Windows can't delete an SQLite file that is still open, so close every connection
+        # first; report (rather than silently skip) anything that still can't be removed.
+        for engine in ENGINES:
+            engine.dispose()
         shutil.rmtree(workdir, ignore_errors=True)
+        if workdir.exists():
+            print(f"Note: could not remove the temporary copy {workdir}; delete it by hand.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,554 @@
+{
+ "date": "2026-10-12",
+ "model": "qwen3.5:latest",
+ "llm_available": true,
+ "risk_model": "ebm-20261011T230951Z",
+ "samples": [
+  "S01",
+  "S02",
+  "S03",
+  "S04",
+  "S05",
+  "S06",
+  "S07",
+  "S08",
+  "S09",
+  "S10",
+  "S11",
+  "S12",
+  "S13",
+  "S14",
+  "S15",
+  "S16",
+  "S17",
+  "S18",
+  "S19",
+  "S20"
+ ],
+ "report": {
+  "qwen3.5:latest": {
+   "extraction_field_accuracy": 1.0,
+   "fields": "200/200",
+   "valid_json": "40/40",
+   "planted_caught": "5/5",
+   "false_mismatch_flags": "0/15",
+   "pattern_findings_planted": "4/5",
+   "pattern_findings_clean": "0/15",
+   "validation_pass": "17/19",
+   "validation_pass_rate": 0.8947,
+   "retries": 0,
+   "avg_seconds": 113.3,
+   "rows": [
+    {
+     "sample": "S01",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "INCOME_MISMATCH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "refer",
+     "passed_validation": null,
+     "seconds": 247.8
+    },
+    {
+     "sample": "S02",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 95.5
+    },
+    {
+     "sample": "S03",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 81.8
+    },
+    {
+     "sample": "S04",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH",
+      "INCOME_MISMATCH",
+      "INCOME_MISMATCH_FORM_PASTUB",
+      "DEPOSITS_BELOW_PAY_STUB_INCOME"
+     ],
+     "pattern_findings": [
+      "INCOME_MISMATCH_FORM_PASTUB",
+      "DEPOSITS_BELOW_PAY_STUB_INCOME"
+     ],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 120.7
+    },
+    {
+     "sample": "S05",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 98.1
+    },
+    {
+     "sample": "S06",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 93.2
+    },
+    {
+     "sample": "S07",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 78.2
+    },
+    {
+     "sample": "S08",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "INCOME_MISMATCH",
+      "ANNUAL_INCOME_MISMATCH"
+     ],
+     "pattern_findings": [
+      "ANNUAL_INCOME_MISMATCH"
+     ],
+     "recommendation": "refer",
+     "passed_validation": true,
+     "seconds": 140.7
+    },
+    {
+     "sample": "S09",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH",
+      "INCOME_MISMATCH",
+      "FORM_INCOME_MISMATCH"
+     ],
+     "pattern_findings": [
+      "FORM_INCOME_MISMATCH"
+     ],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 150.3
+    },
+    {
+     "sample": "S10",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 79.0
+    },
+    {
+     "sample": "S11",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "CREDIT_SCORE_BELOW_MINIMUM"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 130.0
+    },
+    {
+     "sample": "S12",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "LOAN_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 104.4
+    },
+    {
+     "sample": "S13",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 135.0
+    },
+    {
+     "sample": "S14",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 133.7
+    },
+    {
+     "sample": "S15",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "CREDIT_SCORE_BELOW_MINIMUM"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 82.4
+    },
+    {
+     "sample": "S16",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 110.3
+    },
+    {
+     "sample": "S17",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "CREDIT_SCORE_BELOW_MINIMUM",
+      "INCOME_MISMATCH",
+      "INCOME_MISMATCH_FORM_STUB"
+     ],
+     "pattern_findings": [
+      "INCOME_MISMATCH_FORM_STUB"
+     ],
+     "recommendation": "deny",
+     "passed_validation": false,
+     "seconds": 114.6
+    },
+    {
+     "sample": "S18",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 101.3
+    },
+    {
+     "sample": "S19",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": false,
+     "seconds": 89.0
+    },
+    {
+     "sample": "S20",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 80.5
+    }
+   ]
+  },
+  "qwen3.5:35b": {
+   "extraction_field_accuracy": 1.0,
+   "fields": "200/200",
+   "valid_json": "40/40",
+   "planted_caught": "5/5",
+   "false_mismatch_flags": "0/15",
+   "pattern_findings_planted": "5/5",
+   "pattern_findings_clean": "1/15",
+   "validation_pass": "20/20",
+   "validation_pass_rate": 1.0,
+   "retries": 0,
+   "avg_seconds": 38.3,
+   "rows": [
+    {
+     "sample": "S01",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "INCOME_MISMATCH",
+      "INCOME_DISCREPANCY_FORM_PAY_STUB"
+     ],
+     "pattern_findings": [
+      "INCOME_DISCREPANCY_FORM_PAY_STUB"
+     ],
+     "recommendation": "refer",
+     "passed_validation": true,
+     "seconds": 39.9
+    },
+    {
+     "sample": "S02",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "refer",
+     "passed_validation": true,
+     "seconds": 33.9
+    },
+    {
+     "sample": "S03",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "DEPOSITS_EXCEED_EXPECTED_PAY_PERIOD_INCOME"
+     ],
+     "pattern_findings": [
+      "DEPOSITS_EXCEED_EXPECTED_PAY_PERIOD_INCOME"
+     ],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 31.7
+    },
+    {
+     "sample": "S04",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH",
+      "INCOME_MISMATCH",
+      "INCOME_DISCREPANCY_BETWEEN_DOCUMENTS"
+     ],
+     "pattern_findings": [
+      "INCOME_DISCREPANCY_BETWEEN_DOCUMENTS"
+     ],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 29.5
+    },
+    {
+     "sample": "S05",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 27.2
+    },
+    {
+     "sample": "S06",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 24.1
+    },
+    {
+     "sample": "S07",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 56.8
+    },
+    {
+     "sample": "S08",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "INCOME_MISMATCH",
+      "INCOME_DISCREPANCY_FORM_PAY_STUB"
+     ],
+     "pattern_findings": [
+      "INCOME_DISCREPANCY_FORM_PAY_STUB"
+     ],
+     "recommendation": "refer",
+     "passed_validation": true,
+     "seconds": 30.3
+    },
+    {
+     "sample": "S09",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH",
+      "INCOME_MISMATCH",
+      "INCOME_DISCREPANCY_FORM_PAY_STUB"
+     ],
+     "pattern_findings": [
+      "INCOME_DISCREPANCY_FORM_PAY_STUB"
+     ],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 29.4
+    },
+    {
+     "sample": "S10",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 48.3
+    },
+    {
+     "sample": "S11",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "CREDIT_SCORE_BELOW_MINIMUM"
+     ],
+     "pattern_findings": [],
+     "recommendation": "refer",
+     "passed_validation": true,
+     "seconds": 47.4
+    },
+    {
+     "sample": "S12",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "LOAN_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 56.4
+    },
+    {
+     "sample": "S13",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 26.9
+    },
+    {
+     "sample": "S14",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 54.9
+    },
+    {
+     "sample": "S15",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "CREDIT_SCORE_BELOW_MINIMUM"
+     ],
+     "pattern_findings": [],
+     "recommendation": "refer",
+     "passed_validation": true,
+     "seconds": 68.7
+    },
+    {
+     "sample": "S16",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 26.3
+    },
+    {
+     "sample": "S17",
+     "planted": true,
+     "field_accuracy": "10/10",
+     "flags": [
+      "CREDIT_SCORE_BELOW_MINIMUM",
+      "INCOME_MISMATCH",
+      "INCOME_DISCREPANCY"
+     ],
+     "pattern_findings": [
+      "INCOME_DISCREPANCY"
+     ],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 28.7
+    },
+    {
+     "sample": "S18",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 35.2
+    },
+    {
+     "sample": "S19",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [],
+     "pattern_findings": [],
+     "recommendation": "approve",
+     "passed_validation": true,
+     "seconds": 28.5
+    },
+    {
+     "sample": "S20",
+     "planted": false,
+     "field_accuracy": "10/10",
+     "flags": [
+      "PAYMENT_TO_INCOME_HIGH",
+      "LOAN_TO_INCOME_HIGH"
+     ],
+     "pattern_findings": [],
+     "recommendation": "deny",
+     "passed_validation": true,
+     "seconds": 42.7
+    }
+   ]
+  },
+  "decision": {
+   "chosen": "qwen3.5:35b",
+   "smaller_meets_rule": false
+  }
+ }
+}

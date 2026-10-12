@@ -233,9 +233,9 @@ sequenceDiagram
 |---|---|---|
 | `get_application` | Form data, loan request, the applicant's earlier applications, documents with extracted fields, page numbers and `needs_review` markers | Database read |
 | `run_calculations` | Loan-to-income, monthly payment, payment-to-income, with inputs and assumptions | `run_calculations()` |
-| `check_rules` | Rule flags with value and limit, and the documented income used | `check_rules()` with `documented_income` from extraction |
+| `check_rules` | Rule flags with value and limit, every rule limit (`RULES`), and the documented income used | `check_rules()` with `documented_income` from extraction |
 | `get_pattern_findings` | Verified pattern findings with the fields they cite | Results of step 5b/5c |
-| `score_risk` | Default probability, baseline, contributions, top drivers and protective factors, model version | `RiskScorer.score()` |
+| `score_risk` | Default probability, baseline, contributions, top drivers and protective factors, model version, and the policy thresholds (0.5 high risk, 0.2 for a deny without flags) | `RiskScorer.score()` |
 
 **Assistant chat tools** (the panel on every page)
 
@@ -258,7 +258,10 @@ sequenceDiagram
 - **Read-only.** Tools never write decisions or change an application's status.
 - **Reason codes are an enum.** The final-answer schema is built per application: its
   `reason_codes` may only be this application's flag codes, its `MODEL_DRIVER:<term>` codes and
-  the general reasons. Step 8 checks them again.
+  the general reasons. The school server enforces it: told to use two invented codes, both models
+  returned only allowed codes (3 of 3 trials each), while without the enum they copied the
+  invented codes every time. Step 8 checks the codes again. The enum guarantees a valid code,
+  not a fitting one: a model pushed toward an invalid code picks some allowed code instead.
 - **Retry limits.** Connection or timeout errors: 1 retry per call. Invalid output (Document
   Reader reply, Coordinator final answer): 1 retry with the error message. So no call is
   attempted more than twice for either reason. Every attempt is an audit row with its attempt
@@ -459,18 +462,24 @@ Interpretations are drafts for the team to review.
 
 The three cases the Milestone 2 requirement asks for come first.
 
-| Case | Requirement | Expected | Actual (2026-10-11) | Result |
+| Case | Requirement | Expected | Actual (2026-10-12, `qwen3.5:35b`) | Result |
 |---|---|---|---|---|
-| Clean sample (S06), then a scripted officer approval | **1. Representative successful case** | Completes steps 1 to 9; approve or refer; validation passes; pauses at `in_review`; the officer's approval is written to `officer_reviews` and the status becomes `approved` | Not run: the school LLM server was unreachable | not run |
-| Planted mismatch (S01) | **2. Different input condition / branch** | `INCOME_MISMATCH` critical flag; marked for additional review | Not run: the school LLM server was unreachable | not run |
+| Clean sample (S06), then a scripted officer approval | **1. Representative successful case** | Completes steps 1 to 9; approve or refer; validation passes; pauses at `in_review`; the officer's approval is written to `officer_reviews` and the status becomes `approved` | No flags, probability 0.0238; **approve**, confidence 0.9, validation passed; paused at `in_review`; "Eval Officer" approved, status `approved`; extraction 10/10; 26.6 s | pass |
+| Planted mismatch (S01) | **2. Different input condition / branch** | `INCOME_MISMATCH` critical flag; marked for additional review | `INCOME_MISMATCH` (critical) and a pattern finding `INCOME_DISCREPANCY_FORM_PAY_STUB` (warning); **refer**, confidence 0.85, validation passed; marked `CRITICAL_FLAG:INCOME_MISMATCH`; extraction 10/10; 27.6 s | pass |
 | Text file renamed to `.pdf` | **3. Invalid or failing case** | Rejected by the file-signature check; stops at step 1 as `stopped_incomplete` | `stopped_incomplete`: "document: bank_statement (Only PDF, PNG and JPG files are accepted.)" | pass |
 | Missing bank statement | Extra: failing case | Stops at step 1 as `stopped_incomplete` | `stopped_incomplete`, missing "document: bank_statement" | pass |
 | LLM turned off | Extra: fallback path | Saved with calculations, rules and score; `refer`; `LLM_UNAVAILABLE` | `in_review`, `refer`, probability 0.6342, marked `LLM_UNAVAILABLE, EXTRACTION_NEEDS_REVIEW` | pass |
-| Interrupted then resumed | Extra: recovery path | Completes with no step run twice | Stopped at `risk_scoring`, resumed to `in_review`, no step run twice | pass |
+| Interrupted then resumed | Extra: recovery path | Completes with no step run twice | Stopped at `risk_scoring`, resumed to `in_review` (Coordinator `refer`, validation passed), no step run twice | pass |
 
-Without the LLM, a run takes about 0.02 seconds. Cases 1 and 2 need the school server (campus
-network or VPN). An earlier run of the same path on sample S04 (build log, E6) took 65 seconds,
-caught the planted mismatch, and passed validation.
+Run with `qwen3.5:35b` (`LLM_MODEL_ACTIVE`). Per step in cases 1 and 2: Document Reader about
+7 s for both documents, pattern review 5 to 7 s, Coordinator and validation about 14 s. Without the
+LLM, a run takes about 0.02 seconds. The LLM cases need the school server (campus network or VPN).
+An earlier run of the same six cases with `qwen3.5:latest` also passed all six, at 94 s and 155 s
+for cases 1 and 2 (`eval/results/2026-10-11/`).
+
+**Measured outcomes** (no Milestone 1 target was set): 26.6 and 27.6 seconds per application
+with the LLM; extraction accuracy 10/10 on both sampled applications; planted mismatches caught
+1 of 1. On all 20 samples (below): 200/200 fields and 5 of 5 planted mismatches caught.
 
 ### Document Reader accuracy
 
@@ -479,21 +488,39 @@ On the 20 generated samples (40 documents, `qwen3.5:35b`): **100% field accuracy
 to their printed content was essential: on full pages, bank statement balances came back null and
 accuracy was 72.5% (145/200).
 
-### Model comparison (provisional)
+### Model comparison
 
-The comparison on all 20 samples (`eval/run_cases.py --compare qwen3.5:latest,qwen3.5:35b
---samples all`) has not run yet because the school server was unreachable. The current choice
-comes from **one sample** (S09):
+`python eval/run_cases.py --compare qwen3.5:latest,qwen3.5:35b --samples all` ran the full
+workflow on all 20 samples with each model (results in `eval/results/2026-10-12/compare.md`):
 
-| Model | Extraction field accuracy | Valid JSON | Planted mismatches caught | Validation pass | Seconds / application |
-|---|---|---|---|---|---|
-| `qwen3.5:latest` | 10/10 | 2/2 | 1/1 | 1/1 | 101 |
-| `qwen3.5:35b` | 10/10 | 2/2 | 1/1 | 0/1 | 61 |
+| Measure | `qwen3.5:latest` | `qwen3.5:35b` |
+|---|---|---|
+| Extraction field accuracy | 200/200 (100%) | 200/200 (100%) |
+| Valid JSON (Document Reader) | 40/40 | 40/40 |
+| Planted mismatches caught (`INCOME_MISMATCH`) | 5/5 | 5/5 |
+| False mismatch flags | 0/15 | 0/15 |
+| Pattern-review findings on planted samples | 4/5 | 5/5 |
+| Pattern-review findings on clean samples (false) | 0/15 | 1/15 |
+| Validation pass rate | 17/19 (89.5%) | 20/20 (100%) |
+| Invalid-output retries used | 0 | 0 |
+| Average seconds per application | 113.3 | 38.3 |
 
-The dashboard uses `qwen3.5:latest` (`LLM_MODEL_ACTIVE`), chosen by the rule from `CLAUDE2.md`:
-use the smaller model if it is within 5 points on extraction, catches at least as many planted
-mismatches, and its validation pass rate is not more than 5 points lower. One sample cannot
-separate the models; treat this as provisional until the 20-sample run.
+**Decision (E10 rule from `CLAUDE2.md`): `qwen3.5:35b`**, set as `LLM_MODEL_ACTIVE`. The smaller
+model would be used if it were within 5 points on extraction (it is: 100% vs 100%), caught at
+least as many planted mismatches (it did: 5 vs 5), and had a validation pass rate within 5 points.
+It doesn't: 89.5% vs 100%, 10.5 points lower. **This reverses the earlier one-sample choice**
+(`qwen3.5:latest`, from sample S09), which could not separate the models.
+
+What the failures were: for `qwen3.5:latest`, two explanations stated numbers no tool returned
+(`$111,914` for a documented 111,914.92, which is truncation rather than rounding, and `$117`),
+and on S01 pattern review timed out twice (120 s each), so that case was marked `LLM_ERROR` and
+had no recommendation to validate (hence 19, not 20). For `qwen3.5:35b`, the one false pattern
+finding (S03, `DEPOSITS_EXCEED_EXPECTED_PAY_PERIOD_INCOME`) is a warning that the officer sees with
+its cited fields; it did not change any rule flag. `qwen3.5:35b` was also about three times faster
+on this server. The pattern-review prompt fix from E5 (withdrawals are not extracted) held for the
+problem it targeted: no finding that the closing balance differs from the opening balance plus
+deposits, and no finding at all on S16, the sample that triggered it. The S03 finding above is a
+different deposits claim (deposits higher than one pay period would explain).
 
 ### Test data
 
@@ -558,7 +585,7 @@ from that script.
 |---|---|---|---|---|
 | **Model variant c** (8 features, no interactions) instead of variant a | One readable term per feature, and no features that act as stand-ins for age | Variant a: EBM defaults, 10 features, 30 interaction terms | AUC 0.9204 vs 0.9413 (−0.021), Brier 0.1108 vs 0.0937, accuracy 84.3% vs 86.7%; lowest fairness ratio 0.928 vs 0.939 | Same split (17,713 / 4,429 loans, `random_state=42`). Judged by: the phase 2 rule (simplest variant within 0.01 AUC of the best, no ratio below 0.8 for groups of 100+) picked a; the team overrode it for interpretability and age-proxy removal, accepting the AUC cost |
 | **Crop page images to their content** before the Document Reader | The server downscales large images, so small print on mostly blank pages became unreadable | Send full rendered pages | A little image processing per page; nothing measurable lost | Same 40 documents: field accuracy 145/200 (72.5%) on full pages vs 200/200 (100%) cropped; page accuracy 75% vs 100%. Judged by: field accuracy against the answer key |
-| **`qwen3.5:latest`** as the active model instead of `qwen3.5:35b` (provisional) | The decision rule prefers the smaller model when it is not worse | `qwen3.5:35b` | On the one sample, `latest` took longer (101 s vs 61 s, probably a cold start) | **One sample (S09) only**: extraction 10/10 both, planted mismatch caught 1/1 both, validation 1/1 vs 0/1. The 20-sample comparison has not run (server unreachable). Judged by: the E10 rule (within 5 points on extraction and validation, at least as many mismatches caught) |
+| **`qwen3.5:35b`** as the active model instead of `qwen3.5:latest` | The smaller model is preferred only when it is not worse; on 20 samples it was worse on validation | `qwen3.5:latest` (smaller) | Larger model, but on this server it was also faster (38 s vs 113 s per application); it raised one false pattern warning in 15 clean samples | Same 20 samples, full workflow: extraction 200/200 both, planted mismatches 5/5 both, false mismatch flags 0/15 both, validation 20/20 vs 17/19. Judged by: the E10 rule (smaller model only if within 5 points on extraction and validation and catching at least as many mismatches); `latest` was 10.5 points lower on validation. This reversed an earlier one-sample choice |
 | **Remove the previous-default rows and column** from training | All 22,858 applicants with a previous default are labelled repaid, an artifact of the synthetic data; kept, the model would learn that a previous default lowers risk | Train on all 45,000 rows with the column | Half the data is unused for training; prior defaulters are handled by a critical rule instead of the model | Default rate in those rows: 0.0%; cleaned rows: 22,142, default rate 45.2%. Judged by: the target check and the dataset analysis |
 | **Numbers only from code, never from the LLM** | A lending explanation must not contain a number the system didn't compute or read | Trust the LLM's text | Some correct-but-rephrased answers fail and get marked; descriptions of numbers are not checked, only the numbers | Step 8 number check: unit tests reject 55% and 91% when no tool returned them and accept rounding (0.1975 as 19.75%); all 11 numbers in the S04 run's explanation were traced to tool results and it passed. Judged by: `validation.unsupported_numbers` |
 | **Fixed workflow, model chooses tools only inside step 7** | Predictable order and a complete audit trail | An agent that decides which steps to run | Less flexibility; any new check is a code change | Every run's audit log lists the same steps in the same order; interrupted runs resume with no step repeated (Step 2 test) |
@@ -644,14 +671,15 @@ generated documents. The 100% extraction accuracy and the model's AUC say nothin
 applicants or real scanned paperwork.
 
 Next implementation priorities, in order:
-1. Run the 20-sample model comparison (`eval/run_cases.py --compare qwen3.5:latest,qwen3.5:35b
-   --samples all`) and the two LLM evaluation cases, and confirm `LLM_MODEL_ACTIVE`.
-2. Confirm that the server enforces the reason-code enum.
-3. Add harder test documents: scans, rotation, blur, other layouts, and borderline income gaps
-   (10 to 20%).
-4. Replace the substitute ratios with true debt-to-income once existing-debt data is available
+1. Add harder test documents: scans, rotation, blur, other layouts, and borderline income gaps
+   (10 to 20%), and rerun the model comparison on them; the current samples are too easy to
+   separate the models on extraction.
+2. Reduce pattern-review latency and timeouts (it was the slowest step and timed out once with
+   `qwen3.5:latest`), for example by trimming its input or raising `LLM_TIMEOUT_SECONDS` for that
+   call only.
+3. Replace the substitute ratios with true debt-to-income once existing-debt data is available
    (for example from a credit bureau connection).
-5. Validate the model on real (non-synthetic) loan outcomes before any real-world use.
+4. Validate the model on real (non-synthetic) loan outcomes before any real-world use.
 
 ## AI-use disclosure (draft)
 
@@ -680,9 +708,9 @@ experiment, model graphs, returning applicants, the LLM layer, dashboard additio
 codes as an enum, Re-run checks after a correction, the evaluation script, diagrams and report
 material.
 
-**Waiting on the school LLM server** (unreachable during phase 2b): the 20-sample model
-comparison, the two LLM evaluation cases, and the check that the server enforces the
-reason-code enum.
+All server-dependent checks were completed after reconnecting: the 20-sample model comparison
+(which set `LLM_MODEL_ACTIVE=qwen3.5:35b`), the two LLM evaluation cases, and the confirmation
+that the server enforces the reason-code enum.
 
 **Planned:** see Next steps.
 

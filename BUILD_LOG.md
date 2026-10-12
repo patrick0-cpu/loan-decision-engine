@@ -1192,3 +1192,169 @@ finished; the dependent parts are listed below.
    `LLM_BASE_URL` ends in `/api/generate` (works, but the server root is cleaner); screenshots
    under `docs/`; older model files in `models/` (kept on purpose: the waterfall of a stored score
    needs its model file); `kaleido` in `.venv` only for chart checks.
+
+## Phase 2b completion (after reconnecting to the school network)
+
+2026-10-12: the server answered again (`qwen3.5:latest` and `qwen3.5:35b` listed). The steps
+below finish every part that was blocked or only partly done. Tests use database copies, as
+before.
+
+### 2 (completed). Interrupted runs, killed during pattern review — ✅ Done
+- `CLAUDE3.md` asks for the process to be stopped **during pattern review**. Earlier the LLM
+  steps were skipped, so the kill had to happen in the risk score step. Now, with the server:
+  real processes for S04 and S09 were killed during pattern review (after 21 s and 14 s). What
+  was left: `status = submitted`, `current_step = pattern_review`, 2 documents on disk, 11
+  extracted fields, 3 calculations, 3 rule flags, no score, no recommendation, and audit rows
+  up to `checked rules`. The cut-off pattern review left no audit row.
+- **Resume** of #1 from page 4 ("Officer Resume") ran pattern review, the Coordinator (5 tools)
+  and the gatekeeper, then reached `in_review`. Counting completion rows in the audit log, no
+  step completed twice (the 2 extraction rows are one per document). **Mark as stopped** on #2
+  ("Officer Stop") set `stopped_incomplete`.
+- **Found by this run:** the Coordinator's explanation cited `0.5`, the high-risk threshold given
+  in its system prompt. No tool returned that number, so the number check failed it
+  (`VALIDATION_FAILED: NUMBER … 0.5`). **Fix (rule 10 kept):** the tools now return the policy
+  constants, so a model that cites them quotes a tool result. `check_rules` returns every rule
+  limit (`rule_limits` = `RULES`), and `score_risk` returns `policy_thresholds`
+  (`high_risk_probability` 0.5, `deny_needs_flags_below` 0.2). The thresholds are defined once,
+  in `validation.py` (`HIGH_RISK`, `DENY_FLOOR`), and used by both the tool and the consistency
+  check. The offline validation checks still pass. Changes: `coordinator.py`, `validation.py`.
+
+### 4 (completed). Server enforcement of the reason-code enum — ✅ Done
+- Test: for application 1 (18 allowed codes), each model was told to use two invented codes
+  (`FLAG:INCOME_MISMATCH`, `MADE_UP_CODE`), 3 trials per setting:
+
+  | Model | Schema without enum | Per-application enum schema |
+  |---|---|---|
+  | `qwen3.5:latest` | invented codes copied in 3 of 3 | 0 off-list codes in 3 of 3 (`INCOMPLETE_DOCUMENTATION`) |
+  | `qwen3.5:35b` | invented codes copied in 3 of 3 | 0 off-list codes in 3 of 3 (`INCOMPLETE_DOCUMENTATION`) |
+
+- Result: **the server enforces the enum**, so the step 3 retry is a second safeguard rather than
+  the main one. Caveat: under the enum, a model pushed toward an invalid code picks *some* allowed
+  code, which may not fit the case. Validation can confirm a code is allowed, not that it is
+  apt; the officer sees the explanation alongside it.
+- README sections changed: tool design rules ("Reason codes are an enum": enforcement result and
+  caveat).
+
+### 5 (completed). Re-run checks with the LLM steps — ✅ Done
+- Test (page 4, database copy holding S04 after the Resume above): "Officer Fix" corrected
+  `gross_pay` 3983.63 → 3047.92 and clicked Re-run checks. This time pattern review and the
+  Coordinator **ran again** on the corrected values (audit rows after the run boundary: pattern
+  review call, evidence check, 7 tool calls, final answer, validation passed). Current flags went
+  from `PAYMENT_TO_INCOME_HIGH, LOAN_TO_INCOME_HIGH, INCOME_MISMATCH, INCOME_MISMATCH_FORM_PASTUB,
+  DEPOSITS_BELOW_PAY_STUB_INCOME` to `PAYMENT_TO_INCOME_HIGH, LOAN_TO_INCOME_HIGH`: the rule flag
+  and both pattern flags cleared because the documents now agree, not because a step was skipped.
+  The old `INCOME_MISMATCH` row (id 3) is still in `flags`, and annual income has an old row
+  (47,803.56) and a new one (36,575.04). The recommendation stayed **deny** (confidence 0.95,
+  validation passed, not marked), because the default probability is still 0.9932 and both ratio
+  flags remain. The explanation cites only tool numbers. The view and the audit log both record
+  "flags removed: DEPOSITS_BELOW_PAY_STUB_INCOME, INCOME_MISMATCH, INCOME_MISMATCH_FORM_PASTUB",
+  recommendation deny → deny, by Officer Fix.
+- The earlier caveat (pattern flag cleared only because pattern review was skipped) no longer
+  applies.
+
+### 6 (completed). The two LLM evaluation cases — ✅ Done
+- `python eval/run_cases.py` (model `qwen3.5:latest`) ran all six cases, and **all six pass**:
+
+  | Case | Actual |
+  |---|---|
+  | 1. Clean sample S06 + officer decision | no flags, probability 0.0238 → **approve**, confidence 0.95, validation passed, paused at `in_review`; "Eval Officer" approval written to `officer_reviews`, status `approved`; extraction 10/10; 94.2 s (document reader 8.8, pattern review 67.0, Coordinator + validation 18.4) |
+  | 2. Planted mismatch S01 | `INCOME_MISMATCH` (critical) + pattern finding `ANNUAL_INCOME_MISMATCH_FORM_STUB` (warning) → **refer**, confidence 0.9, validation passed, marked `CRITICAL_FLAG:INCOME_MISMATCH`; extraction 10/10; 154.6 s (pattern review 120.1) |
+  | 3–6 | as before: invalid file and missing statement stop at step 1; LLM off → `refer` + `LLM_UNAVAILABLE`; interrupted → resumed with no step twice (this time with the LLM on, 71.6 s) |
+
+  Measured outcomes (no Milestone 1 target set): seconds per application 94.2 (clean) and 154.6
+  (planted); extraction accuracy 10/10 and 10/10; planted mismatches caught 1/1.
+- `eval/results/2026-10-11/cases.md` and `cases.json` were overwritten with this run (the
+  folder is named by UTC date).
+- README sections changed: Evaluation → Test cases (actual results for cases 1 and 2, timing
+  note), How the LLM uses tools (Coordinator tool table: `check_rules` and `score_risk` return the
+  limits and thresholds).
+
+### 7 (completed). Compare the two models on all 20 samples — ✅ Done
+- Test: `python eval/run_cases.py --compare qwen3.5:latest,qwen3.5:35b --samples all` (database
+  copy; no other LLM traffic during the run, so the timings are clean). Results in
+  `eval/results/2026-10-12/compare.md` and `compare.json`:
+
+  | Measure | `qwen3.5:latest` | `qwen3.5:35b` |
+  |---|---|---|
+  | Extraction field accuracy | 200/200 (100%) | 200/200 (100%) |
+  | Valid JSON | 40/40 | 40/40 |
+  | Planted mismatches caught (out of 5) | 5 | 5 |
+  | False mismatch flags (out of 15) | 0 | 0 |
+  | Pattern-review findings, planted (true) | 4/5 | 5/5 |
+  | Pattern-review findings, clean (false) | 0/15 | 1/15 (S03 `DEPOSITS_EXCEED_EXPECTED_PAY_PERIOD_INCOME`) |
+  | Validation pass rate | 17/19 (89.5%) | 20/20 (100%) |
+  | Retries used | 0 | 0 |
+  | Average seconds per application | 113.3 | 38.3 |
+
+- **Decision (E10 rule): `LLM_MODEL_ACTIVE=qwen3.5:35b`.** `qwen3.5:latest` meets the extraction
+  condition (100% vs 100%) and the mismatch condition (5 vs 5), but its validation pass rate is
+  10.5 points lower (89.5% vs 100%), so the rule picks the larger model. **This differs from the
+  earlier one-sample choice** (`qwen3.5:latest`, phase 2 E10), which one sample could not settle.
+  `.env` updated. (Your `.env` now also has `LLM_MODEL=qwen3.5:latest`, which settles the earlier
+  open item about both model variables being the same.)
+- Why `latest` failed: from the run's database copy (inspected before it was deleted), S17's
+  explanation wrote `$111,914` for a documented 111,914.92 (truncation, so the number check
+  rejected it as designed); S19's stated `$117`, which matches no tool result; and on S01 pattern
+  review timed out twice (`ReadTimeout`, 120 s each, ~248 s in total), so the case was marked
+  `LLM_ERROR` and had no recommendation to validate (19 validated instead of 20). `35b` failed
+  none.
+- E5 prompt fix re-tested: the false positive it targeted (closing balance ≠ opening + deposits)
+  did not recur, and S16 got no finding with either model. `35b` made one different false
+  finding on S03 (deposits higher than one pay period explains), a warning only, with no change
+  to the rule flags.
+- README sections changed: Evaluation → Model comparison (the 20-sample table and decision
+  replace the provisional one-sample table), Evaluation → Test cases (rerun with `qwen3.5:35b`;
+  all six pass), Design decision records (model choice), Next steps, Project status.
+
+### 6 (rerun with the active model) — ✅ Done
+- After the model switch, `python eval/run_cases.py` was run again with `qwen3.5:35b`: **6/6
+  pass**. Case 1 (S06): approve, confidence 0.9, validation passed, officer approval recorded,
+  26.6 s (document reader 7.2, pattern review 5.5, Coordinator 13.8). Case 2 (S01):
+  `INCOME_MISMATCH` + pattern finding `INCOME_DISCREPANCY_FORM_PAY_STUB`, refer, confidence 0.85,
+  validation passed, marked, 27.6 s. Case 6: resumed and the Coordinator ran (refer, validation
+  passed), with no step completed twice. Results in `eval/results/2026-10-12/cases.*`. The
+  `qwen3.5:latest` run stays in `eval/results/2026-10-11/`.
+
+### Follow-up fixes found while completing the steps
+- **Policy constants in tool results** (from the Step 2 rerun): see 2 (completed) above.
+  `coordinator.py`, `validation.py`.
+- **Eval cleanup leaked temporary database copies.** `eval/run_cases.py` removed its temporary
+  folder with `ignore_errors=True` while the SQLite file was still open, which Windows refuses, so
+  six earlier runs left copies in `%TEMP%`. Fix: every engine the script opens is disposed before
+  deletion, and a copy that still can't be removed is reported instead of silently kept. A direct
+  test showed the copy can't be removed before `dispose()` and is removed after it. The rerun of
+  the cases left nothing behind, and the stale copies (sample data only) were deleted.
+- **README re-check (Step 10) after these edits:** all three diagrams still parse; every number
+  added comes from the runs above; one sentence I first wrote overstated the E5 re-test ("no
+  finding about balances and deposits on any clean sample"), so it was corrected to what the data
+  shows. All pages render with `qwen3.5:35b` active. The real `loans.db` still has 0 applications
+  (and the one live audit row), and `uploads/` is empty.
+
+## Phase 2b summary (final)
+
+| Step | Status | Note |
+|---|---|---|
+| 1 Switch to variant c | ✅ Done | AUC 0.9204, matches B1 |
+| 2 Interrupted runs | ✅ Done | Real kill during pattern review; Resume and Mark as stopped; no step twice |
+| 3 One retry on invalid output | ✅ Done | Mocked: fails once then passes; fails twice |
+| 4 Reason codes as an enum | ✅ Done | Server enforces the enum (both models, 3/3 trials) |
+| 5 Re-run checks after a correction | ✅ Done | With LLM steps re-run; `INCOME_MISMATCH` removed, old row kept |
+| 6 Evaluation script | ✅ Done | 6/6 cases pass with `qwen3.5:35b` (and with `qwen3.5:latest`) |
+| 7 Compare models on 20 samples | ✅ Done | Rule chose `qwen3.5:35b`, reversing the one-sample choice |
+| 8 Diagrams | ✅ Done | Three diagrams parse and render |
+| 9 Report material | ✅ Done | Model-choice record now uses the 20-sample numbers |
+| 10 README consistency check | ✅ Done | Re-checked after the completion edits |
+| 11 Final checks and commit | ✅ Done | |
+
+## Waiting for the user (final)
+
+1. **Review the drafts:** case interpretations in `eval/results/2026-10-12/cases.md`, the README
+   "AI-use disclosure (draft)", and the empty "Decisions to revisit from Milestone 1".
+2. **Milestone 1 measurable outcome:** still blank in `CLAUDE3.md`; the reports use time per
+   application, extraction accuracy and planted mismatches caught.
+3. **Spec files:** `CLAUDE.md`, `CLAUDE2.md` and `CLAUDE3.md` are kept out of the repository, so
+   the README names them without links.
+4. **Smaller open items:** `LLM_BASE_URL` ends in `/api/generate` (works; the server root is
+   cleaner); screenshots under `docs/`; `kaleido` in `.venv` only for chart checks; pattern
+   review is the slowest step and timed out once with `qwen3.5:latest` (see Next steps).
+5. **Push:** the phase 2b commits are local; tell me if they should go to GitHub.
